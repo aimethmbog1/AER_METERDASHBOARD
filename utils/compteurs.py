@@ -39,6 +39,7 @@ import random
 import re
 from dataclasses import dataclass
 from datetime import date, timedelta
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
@@ -189,21 +190,83 @@ def build_from_holley_files(fichiers: list[dict]) -> pd.DataFrame:
     return out
 
 
-def suggest_locality_groups(localites_brutes: list[str], seuil: float = 0.82) -> dict[str, str]:
-    """Regroupe les noms de localités très similaires (coquilles, variantes
-    d'orthographe) sous le nom le plus fréquent du groupe. Ne fusionne
-    JAMAIS automatiquement deux noms franchement différents : c'est une
-    suggestion à valider, pas une correction silencieuse."""
+_CHEMIN_SITES_OFFICIELS = Path(__file__).resolve().parent.parent / "data" / "sites_officiels_aer.csv"
+
+
+@st.cache_data(show_spinner=False)
+def load_official_sites() -> pd.DataFrame:
+    """Liste officielle des 499 sites du parc solaire AER (colonnes nom /
+    région / département / antenne), extraite du classeur
+    `Gestion_Parc_Solaire_AER2027_DASHBOARD.xlsx` (feuille « Données
+    sites ») et embarquée dans ce dépôt comme référence — pas une donnée
+    compteurs : elle sert uniquement à retrouver l'orthographe officielle
+    d'une localité quand un compteur y a été installé. Beaucoup de
+    localités des exports Holley ne correspondent à aucun site de cette
+    liste (sous-localités, quartiers) : c'est normal, ces localités restent
+    gérées par le regroupement interne ci-dessous."""
+    if _CHEMIN_SITES_OFFICIELS.exists():
+        return pd.read_csv(_CHEMIN_SITES_OFFICIELS)
+    return pd.DataFrame(columns=["nom", "region", "departement", "antenne"])
+
+
+def suggest_locality_groups(
+    localites_brutes: list[str], seuil: float = 0.82,
+    sites_officiels: list[str] | None = None, seuil_officiel: float = 0.80,
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Propose une correction pour chaque localité brute, en deux passes :
+
+    1. **Rapprochement d'un site officiel AER** (si `sites_officiels` est
+       fourni) : si une localité ressemble fortement (similarité de texte
+       >= `seuil_officiel`) à un des 499 sites du parc solaire, elle est
+       corrigée vers l'orthographe officielle de ce site.
+    2. **Regroupement interne** (comme avant) pour les localités restantes :
+       les variantes très similaires entre elles (coquilles, casse,
+       espaces) sont regroupées sous la variante la plus fréquente.
+
+    Ne fusionne JAMAIS automatiquement deux noms franchement différents, et
+    ne fait JAMAIS correspondre une localité à un site officiel sans un
+    score de similarité élevé : c'est une suggestion à valider dans
+    l'interface, pas une correction silencieuse. Renvoie `(mapping, source)`
+    où `source[nom_brut]` vaut "Site officiel AER", "Regroupement interne"
+    ou "Inchangé"."""
     comptes = pd.Series(localites_brutes).value_counts()
     noms = list(comptes.index)
     mapping: dict[str, str] = {}
+    source: dict[str, str] = {}
     deja_groupes: set[str] = set()
+
+    lookup_officiel: dict[str, str] = {}
+    noms_officiels_maj: list[str] = []
+    if sites_officiels:
+        for s in sites_officiels:
+            maj = str(s).strip().upper()
+            if maj and maj not in lookup_officiel:
+                lookup_officiel[maj] = str(s).strip()
+        noms_officiels_maj = list(lookup_officiel.keys())
+
+    restants = []
     for nom in noms:
-        if nom in deja_groupes or nom == "(localité non renseignée)":
+        if nom == "(localité non renseignée)":
+            mapping[nom] = nom
+            source[nom] = "—"
+            deja_groupes.add(nom)
+            continue
+        if noms_officiels_maj:
+            meilleur = max(noms_officiels_maj, key=lambda o: difflib.SequenceMatcher(None, nom, o).ratio())
+            ratio = difflib.SequenceMatcher(None, nom, meilleur).ratio()
+            if ratio >= seuil_officiel:
+                mapping[nom] = lookup_officiel[meilleur]
+                source[nom] = "Site officiel AER"
+                deja_groupes.add(nom)
+                continue
+        restants.append(nom)
+
+    for nom in restants:
+        if nom in deja_groupes:
             continue
         groupe = [nom]
-        for autre in noms:
-            if autre == nom or autre in deja_groupes or autre == "(localité non renseignée)":
+        for autre in restants:
+            if autre == nom or autre in deja_groupes:
                 continue
             if difflib.SequenceMatcher(None, nom, autre).ratio() >= seuil:
                 groupe.append(autre)
@@ -211,11 +274,13 @@ def suggest_locality_groups(localites_brutes: list[str], seuil: float = 0.82) ->
             canonique = max(groupe, key=lambda g: comptes[g])
             for g in groupe:
                 mapping[g] = canonique
+                source[g] = "Regroupement interne"
                 deja_groupes.add(g)
         else:
             mapping[nom] = nom
+            source[nom] = "Inchangé"
             deja_groupes.add(nom)
-    return mapping
+    return mapping, source
 
 
 def apply_locality_mapping(df: pd.DataFrame, mapping: dict[str, str]) -> pd.DataFrame:
@@ -225,28 +290,36 @@ def apply_locality_mapping(df: pd.DataFrame, mapping: dict[str, str]) -> pd.Data
 
 
 def locality_cleanup_ui(df: pd.DataFrame) -> pd.DataFrame:
-    """Tableau éditable (barre latérale) proposant un regroupement des
-    variantes d'orthographe détectées parmi les localités brutes ; renvoie
-    `df` avec sa colonne `localite` mise à jour selon les corrections
-    validées par l'utilisateur. Rien n'est fusionné sans validation."""
+    """Tableau éditable (barre latérale) proposant une correction pour
+    chaque localité brute détectée — vers un site officiel AER quand la
+    ressemblance est forte, sinon un regroupement interne des variantes
+    d'orthographe ; renvoie `df` avec sa colonne `localite` mise à jour
+    selon les corrections validées par l'utilisateur. Rien n'est fusionné
+    sans validation."""
     comptes = df["localite_brute"].value_counts()
-    suggestion = suggest_locality_groups(df["localite_brute"].tolist())
+    sites_ref = load_official_sites()
+    noms_officiels = sites_ref["nom"].tolist() if not sites_ref.empty else None
+    suggestion, source = suggest_locality_groups(df["localite_brute"].tolist(), sites_officiels=noms_officiels)
     table_initiale = pd.DataFrame({
         "Localité (brute)": comptes.index,
         "Occurrences": comptes.values,
         "Localité retenue": [suggestion.get(n, n) for n in comptes.index],
+        "Origine de la correction": [source.get(n, "—") for n in comptes.index],
     })
     cle = "cpt_localite_cleanup_" + str(abs(hash(tuple(sorted(comptes.index)))))
     with st.sidebar.expander(f"🧹 Vérifier les localités ({len(comptes)} valeurs brutes)", expanded=False):
         st.caption(
             "Les fichiers réels contiennent souvent des variantes d'orthographe pour une même "
-            "localité (coquilles, casse, espaces). Une proposition de regroupement est déjà "
-            "pré-remplie ci-dessous — corrige-la si besoin : deux lignes avec la même valeur "
-            "retenue seront comptées ensemble."
+            "localité (coquilles, casse, espaces). Une proposition est déjà pré-remplie ci-dessous : "
+            "« Site officiel AER » quand la localité ressemble fortement à un des 499 sites du parc "
+            "solaire (orthographe officielle reprise), « Regroupement interne » pour les variantes "
+            "d'une même localité regroupées entre elles. Corrige la colonne « Localité retenue » si "
+            "besoin — rien n'est fusionné sans validation."
         )
         edite = st.data_editor(
             table_initiale, hide_index=True, use_container_width=True, key=cle,
-            disabled=["Localité (brute)", "Occurrences"], height=min(60 + 36 * len(table_initiale), 400),
+            disabled=["Localité (brute)", "Occurrences", "Origine de la correction"],
+            height=min(60 + 36 * len(table_initiale), 400),
         )
     mapping = dict(zip(edite["Localité (brute)"], edite["Localité retenue"]))
     return apply_locality_mapping(df, mapping)

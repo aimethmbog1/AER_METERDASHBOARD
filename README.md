@@ -46,10 +46,23 @@ compteurs »). Deux formats sont pris en charge :
   fois.
 
 Dans les deux cas, un encart « 🧹 Vérifier les localités » (barre latérale) propose
-un regroupement automatique des variantes d'orthographe détectées dans les noms de
-localités (coquilles, casse, espaces superflus, noms dupliqués — fréquents dans les
-données réelles). La proposition est pré-remplie mais reste éditable : rien n'est
-fusionné silencieusement.
+une correction pour chaque localité détectée, en deux passes :
+
+1. **Rapprochement d'un site officiel AER** — `data/sites_officiels_aer.csv` embarque
+   les 499 sites du parc solaire (nom, région, département, antenne), extraits du
+   classeur `Gestion_Parc_Solaire_AER2027_DASHBOARD.xlsx` (feuille « Données sites »).
+   Une localité qui ressemble fortement à un de ces sites est corrigée vers son
+   orthographe officielle (ex. `DOUKOUR0Y` → `Doukouroy`, `DJIGBAMAFOUS` /
+   `NJIBAMAFOU` → `Njigbamafou`).
+2. **Regroupement interne** pour les localités restantes (coquilles, casse, espaces
+   superflus, noms dupliqués) — comme avant, regroupées sous la variante la plus
+   fréquente.
+
+La colonne « Origine de la correction » indique d'où vient chaque proposition. Dans
+les deux cas, la proposition reste éditable : rien n'est fusionné silencieusement.
+Beaucoup de localités des exports Holley ne correspondent à aucun site officiel
+(sous-localités, quartiers) — c'est normal, elles passent simplement par le
+regroupement interne.
 
 ## Les quatre onglets
 
