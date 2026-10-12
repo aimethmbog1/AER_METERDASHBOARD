@@ -4,9 +4,34 @@ Application Streamlit indépendante pour visualiser les statistiques des **compt
 (abonnés) installés**, par localité et par période d'installation, à partir des
 exports du système de gestion des compteurs prépayés **Holley**.
 
-Reprend la palette visuelle du tableau de bord AER (parc solaire / ressources
-humaines) pour une cohérence entre outils AER, mais ne dépend d'aucun autre dépôt :
-elle lit uniquement les fichiers Excel que tu lui déposes.
+Elle lit uniquement les fichiers Excel que tu lui déposes, indépendamment de tout
+autre dépôt.
+
+## Identité visuelle — panneau de supervision (dark/néon)
+
+Cette application a sa **propre identité visuelle**, volontairement différente du
+reste de la suite AER Streamlit (qui garde la palette claire navy/bleu/or du
+classeur Excel) : un thème sombre façon panneau de supervision industrielle,
+avec un compromis assumé — *« néon réservé aux états »*.
+
+- **Base très majoritairement neutre et sombre** ; la couleur saturée
+  (émeraude/ambre/rouge/bleu) n'apparaît que sur ce qui a un état réel (actif,
+  alerte, information) — jamais comme simple décor. Ce compromis s'inspire de la
+  pratique professionnelle des interfaces de supervision (philosophie ISA-101
+  « high-performance HMI »), qui réserve la couleur saturée à l'anormal ; aucune
+  information n'est codée uniquement par la couleur (icône + libellé toujours
+  présents).
+- **Compteur total animé** au centre de gravité visuel de l'application (en
+  haut de la page), avec un effet de compte-à-rebours progressif
+  (`easeOutQuad`) et une respiration lente réservée au badge de statut
+  « Installations actives ».
+- **Flux animé** postes Holley → localités → total, juste en dessous.
+- Toutes les animations respectent `prefers-reduced-motion` (désactivées si la
+  personne a demandé moins de mouvement dans son système).
+- Palette catégorielle des graphiques multi-séries (types de compteur, phases) :
+  validée par la skill de data-visualisation (8 teintes, séparation
+  daltonisme-compatible vérifiée), volontairement distincte des couleurs de
+  statut.
 
 ## Installation
 

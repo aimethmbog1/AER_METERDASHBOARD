@@ -6,8 +6,9 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from utils.theme import (
-    PAGE_ICON, APP_TITLE, NAVY, BLUE, GOLD, GREY, CATEGORICAL,
-    inject_base_style, section_title, kpi_row, plotly_base_layout, render_sidebar_footer,
+    PAGE_ICON, APP_TITLE, NAVY, BLUE, GOLD, GREY, CATEGORICAL, BG_SURFACE,
+    inject_base_style, section_title, kpi_row, mini_metric, status_badge,
+    animated_counter, flow_diagram, plotly_base_layout, render_sidebar_footer,
 )
 from utils.compteurs import (
     read_excel_sheet_names, load_excel,
@@ -177,13 +178,53 @@ derniere_periode = df["periode"].max()
 nb_solaire = int(df["solaire"].sum()) if "solaire" in df else 0
 taux_solaire = f"{nb_solaire / total * 100:.0f} %" if total else "—"
 
-kpi_row([
-    ("🔌 Compteurs installés", f"{total:,}".replace(",", " "), None),
-    ("📍 Localités couvertes", f"{nb_localites}", None),
-    ("🗺️ Postes couverts", f"{nb_postes}" if nb_postes else "—", None),
-    ("📅 Dernière période", derniere_periode.strftime("%m/%Y") if pd.notna(derniere_periode) else "—", None),
-    ("☀️ Compteurs solaires", taux_solaire, None),
-])
+# =============================================================================
+# Bandeau central — panneau de supervision (compromis "néon réservé aux
+# états" validé avec l'utilisateur : le Total occupe le centre de gravité
+# visuel, le statut actif/inactif est le SEUL élément qui respire).
+# =============================================================================
+recence_jours = (pd.Timestamp.now() - derniere_periode).days if pd.notna(derniere_periode) else None
+# Heuristique assumée (à défaut d'une date de "dernière synchronisation" dans
+# les fichiers Holley) : installations jugées "actives" si le dernier lot
+# déposé est daté de moins de 90 jours par rapport à aujourd'hui — un fichier
+# déposé longtemps après sa période réelle fera apparaître "Aucune
+# installation récente" même si le projet est toujours en cours.
+actif = recence_jours is not None and recence_jours <= 90
+statut_label = "Installations actives" if actif else "Aucune installation récente"
+statut_code = "ok" if actif else "neutral"
+
+with st.container():
+    st.markdown('<div class="aer-glass">', unsafe_allow_html=True)
+    hero_g, hero_c, hero_d = st.columns([1, 1.5, 1])
+    with hero_g:
+        status_badge(statut_label, statut_code, pulse=actif)
+        st.write("")
+        mini_metric("📍 Localités couvertes", nb_localites)
+        mini_metric("🗺️ Postes couverts", nb_postes if nb_postes else "—")
+    with hero_c:
+        animated_counter("🔌 Compteurs installés — total", total, status="info", key="hero_total")
+    with hero_d:
+        mini_metric("📅 Dernière période", derniere_periode.strftime("%m/%Y") if pd.notna(derniere_periode) else "—")
+        mini_metric("☀️ Compteurs solaires", taux_solaire)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+if nb_postes:
+    par_poste_flux = df["poste"].value_counts()
+    SEUIL_FLUX = 6
+    tete_flux = par_poste_flux.head(SEUIL_FLUX)
+    reste_flux = int(par_poste_flux.iloc[SEUIL_FLUX:].sum())
+    flux_postes = list(tete_flux.items())
+    if reste_flux:
+        flux_postes.append(("Autres postes", reste_flux))
+
+    st.write("")
+    section_title("FLUX D'INSTALLATION — DES POSTES HOLLEY VERS LE TOTAL")
+    st.caption(
+        "Chaque poste Holley alimente ses localités, qui remontent vers le total général — les "
+        f"{min(SEUIL_FLUX, len(par_poste_flux))} postes les plus actifs sont détaillés, le reste est agrégé "
+        "sous « Autres postes »."
+    )
+    flow_diagram(flux_postes, nb_localites, total, key="hero_flow")
 
 st.write("")
 
@@ -277,8 +318,13 @@ with tab_localite:
             section_title("RÉPARTITION PAR TYPE DE COMPTEUR")
             par_type = df_loc["type_compteur"].value_counts().reset_index()
             par_type.columns = ["Type de compteur", "Compteurs installés"]
+            # Trier AVANT de calculer les couleurs : px.bar reçoit les lignes triées,
+            # donc le tableau de couleurs doit suivre le même ordre (sinon la couleur
+            # d'une barre ne correspond plus à son type — bug repéré en vérifiant le
+            # rendu de cette refonte, corrigé au passage).
+            par_type = par_type.sort_values("Compteurs installés")
             couleurs_type = [GOLD if ("SOLAR" in t or "SOLAIRE" in t) else BLUE for t in par_type["Type de compteur"]]
-            fig_t = px.bar(par_type.sort_values("Compteurs installés"), x="Compteurs installés", y="Type de compteur",
+            fig_t = px.bar(par_type, x="Compteurs installés", y="Type de compteur",
                            orientation="h", text="Compteurs installés")
             fig_t.update_traces(marker_color=couleurs_type, textposition="outside")
             fig_t = plotly_base_layout(fig_t, height=max(220, 40 * len(par_type)), legend=False)
@@ -390,7 +436,7 @@ with tab_croisement:
         pivot.columns = [c.strftime("%m/%Y") for c in pivot.columns]
         fig = go.Figure(data=go.Heatmap(
             z=pivot.values, x=pivot.columns, y=pivot.index,
-            colorscale=[[0, "#F2F2F2"], [1, NAVY]], hoverongaps=False,
+            colorscale=[[0, BG_SURFACE], [1, NAVY]], hoverongaps=False,
             colorbar=dict(title="Compteurs"),
         ))
         fig = plotly_base_layout(fig, height=max(360, 28 * len(pivot)), legend=False)
