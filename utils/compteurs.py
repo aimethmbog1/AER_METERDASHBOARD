@@ -24,6 +24,16 @@ Deux formats de fichier sont pris en charge :
    retombe sur une correspondance manuelle des colonnes, l'utilisateur
    indiquant lui-même quelle colonne est la localité / la date.
 
+Attention au vocabulaire (confirmé par l'AER) : la colonne `Holley System ID`
+des exports (ex. « 31K433 ») est un **poste** — l'équipement/poste de
+configuration Holley ayant servi à enregistrer les compteurs — PAS le site au
+sens du reste de l'application. Le vrai « site » (au sens du tableau de bord
+parc solaire) correspond ici à la **localité** : c'est pour cela que
+`suggest_locality_groups` la rapproche des 499 sites officiels du parc
+solaire. Un même poste peut couvrir plusieurs localités/sites, et c'est donc
+`localite` (pas `poste`) qui doit être lue comme « site » partout dans
+l'interface.
+
 Les données réelles contiennent aussi beaucoup de variantes d'orthographe sur
 les noms de localités (ex. « DJIGBAMAFOU » / « DJIGBAMAFOUS », ou des
 coquilles comme « DOUKOUR0Y » pour « DOUKOUROY ») : `suggest_locality_groups`
@@ -71,10 +81,14 @@ def generate_sample_data(n: int = 650, seed: int = 42) -> pd.DataFrame:
     rng = random.Random(seed)
     debut, fin = date(2022, 1, 1), date(2026, 10, 1)
     jours_total = (fin - debut).days
+    # Postes fictifs (codes courts, à l'image des identifiants de poste/configuration
+    # Holley réels comme « 31K433 ») — une région imaginaire par poste, uniquement pour
+    # varier l'exemple ; le poste n'est PAS la localité (voir docstring du module).
+    postes_exemple = {region: f"P-{region[:3].upper()}" for region in LOCALITES_EXEMPLE}
     rows = []
     for i in range(n):
-        site = rng.choice(list(LOCALITES_EXEMPLE.keys()))
-        localite = rng.choice(LOCALITES_EXEMPLE[site])
+        region = rng.choice(list(LOCALITES_EXEMPLE.keys()))
+        localite = rng.choice(LOCALITES_EXEMPLE[region])
         jours_offset = (rng.randint(max(0, jours_total - 540), jours_total) if rng.random() < 0.55
                         else rng.randint(0, jours_total))
         d = debut + timedelta(days=jours_offset)
@@ -83,7 +97,7 @@ def generate_sample_data(n: int = 650, seed: int = 42) -> pd.DataFrame:
             "numero_compteur": f"CPT-{10000 + i}",
             "localite_brute": localite.upper(),
             "localite": localite.upper(),
-            "site": site,
+            "poste": postes_exemple[region],
             "categorie": "MENAGES",
             "type_compteur": type_compteur,
             "solaire": type_compteur == "SOLAR",
@@ -167,8 +181,10 @@ def build_from_holley_files(fichiers: list[dict]) -> pd.DataFrame:
         bloc = pd.DataFrame()
         bloc["localite_brute"] = (raw.get("Full Address", pd.Series(["(non renseigné)"] * n)).astype(str)
                                    .str.strip().str.upper().map(_normaliser_localite))
-        bloc["site"] = (raw.get("Holley System ID", pd.Series(["(non renseigné)"] * n)).astype(str)
-                        .str.strip().fillna("(non renseigné)"))
+        # "Holley System ID" est un POSTE (équipement/poste de configuration Holley),
+        # pas un site au sens du reste de l'application — voir docstring du module.
+        bloc["poste"] = (raw.get("Holley System ID", pd.Series(["(non renseigné)"] * n)).astype(str)
+                         .str.strip().fillna("(non renseigné)"))
         template = raw.get("Template Code", pd.Series(["(non renseigné)"] * n)).astype(str)
         parties = template.str.split("|", n=1, expand=True)
         # .fillna ici est important : sans elle, une cellule manquante resterait une vraie
@@ -330,12 +346,12 @@ def locality_cleanup_ui(df: pd.DataFrame) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 def apply_column_mapping(raw: pd.DataFrame, mapping: dict) -> tuple[pd.DataFrame, int]:
     """mapping = {"localite": "<nom de colonne réel>", "date_installation": "...",
-    "site": "..." | None, "type_compteur": "..." | None}."""
+    "poste": "..." | None, "type_compteur": "..." | None}."""
     out = pd.DataFrame()
     out["localite_brute"] = raw[mapping["localite"]].astype(str).str.strip().str.upper().map(_normaliser_localite)
     out["date_installation"] = pd.to_datetime(raw[mapping["date_installation"]], errors="coerce")
-    out["site"] = (raw[mapping["site"]].astype(str).str.strip().fillna("(non précisé)")
-                   if mapping.get("site") else "(non précisé)")
+    out["poste"] = (raw[mapping["poste"]].astype(str).str.strip().fillna("(non précisé)")
+                    if mapping.get("poste") else "(non précisé)")
     out["type_compteur"] = (raw[mapping["type_compteur"]].astype(str).str.strip().str.upper().fillna("(non précisé)")
                              if mapping.get("type_compteur") else "(non précisé)")
     out["solaire"] = out["type_compteur"].str.contains("SOLAR|SOLAIRE", regex=True, na=False)

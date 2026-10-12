@@ -39,7 +39,10 @@ compteurs »). Deux formats sont pris en charge :
   01/01/2018 et n'est donc pas utilisée. La date détectée dans chaque nom de
   fichier est affichée et modifiable dans la barre latérale avant de lancer les
   statistiques, et un tableau de traçabilité par lot (onglet « Vue d'ensemble »)
-  permet de la vérifier.
+  permet de la vérifier. La colonne `Holley System ID` (ex. « 31K433 ») est un
+  **poste** — l'équipement/poste de configuration Holley ayant servi à
+  enregistrer les compteurs — et non un site géographique : le vrai équivalent
+  « site » de cette application, c'est la **localité** (voir ci-dessous).
 - **Format générique** (si les colonnes ci-dessus sont absentes) : une
   correspondance manuelle des colonnes est proposée (quelle colonne est la
   localité, quelle colonne est la date d'installation...), pour un fichier à la
@@ -66,11 +69,11 @@ regroupement interne.
 
 ## Les quatre onglets
 
-- **📊 Vue d'ensemble** : indicateurs clés (compteurs installés, localités et sites
+- **📊 Vue d'ensemble** : indicateurs clés (compteurs installés, localités et postes
   couverts, dernière période, part de compteurs solaires), top 10 des localités,
   rythme d'installation récent, et traçabilité par lot (un fichier déposé = un lot).
 - **📍 Par localité** : classement des localités par nombre de compteurs installés,
-  filtre par site, répartition par type de compteur (réseau / solaire), tableau
+  filtre par poste, répartition par type de compteur (réseau / solaire), tableau
   exportable.
 - **📅 Par période** : nouvelles installations et cumul dans le temps, avec un choix
   de granularité (mois / trimestre / année) et un filtre de plage de dates.
