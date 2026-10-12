@@ -137,13 +137,22 @@ def parse_date_from_filename(nom_fichier: str, jour_mois_annee: bool = True) -> 
 _MOTIF_MOT_DOUBLE = re.compile(r"^(.+?) \1$")
 
 
-def _normaliser_localite(brut: str) -> str:
+def _normaliser_localite(brut) -> str:
     """Nettoyage léger avant le regroupement par similarité : espaces
     multiples, et le cas fréquent d'un nom de localité dupliqué deux fois
     de suite (« DJIGBAMAFOUS DJIGBAMAFOUS »), que la seule similarité de
     texte ne détecte pas bien (la répétition fait baisser le score de
-    ressemblance avec la version simple)."""
-    s = re.sub(r"\s+", " ", brut).strip()
+    ressemblance avec la version simple).
+
+    `brut` peut être une vraie valeur manquante (None/NaN/pd.NA) : avec les
+    versions récentes de pandas (dtype "str" par défaut), une cellule Excel
+    vide reste une valeur manquante même après `.astype(str)` — elle n'est
+    PAS convertie en texte "nan" comme avec l'ancien dtype "object". Sans
+    cette garde, `re.sub` reçoit un float et lève un TypeError (observé en
+    production sur un fichier contenant une adresse vide)."""
+    if pd.isna(brut):
+        return "(localité non renseignée)"
+    s = re.sub(r"\s+", " ", str(brut)).strip()
     m = _MOTIF_MOT_DOUBLE.match(s)
     return m.group(1) if m else s
 
@@ -157,12 +166,18 @@ def build_from_holley_files(fichiers: list[dict]) -> pd.DataFrame:
         bloc = pd.DataFrame()
         bloc["localite_brute"] = (raw.get("Full Address", pd.Series(["(non renseigné)"] * n)).astype(str)
                                    .str.strip().str.upper().map(_normaliser_localite))
-        bloc["site"] = raw.get("Holley System ID", pd.Series(["(non renseigné)"] * n)).astype(str).str.strip()
+        bloc["site"] = (raw.get("Holley System ID", pd.Series(["(non renseigné)"] * n)).astype(str)
+                        .str.strip().fillna("(non renseigné)"))
         template = raw.get("Template Code", pd.Series(["(non renseigné)"] * n)).astype(str)
         parties = template.str.split("|", n=1, expand=True)
-        bloc["categorie"] = parties[0].str.strip() if 0 in parties else "(non renseigné)"
-        bloc["type_compteur"] = (parties[1].str.strip().str.upper() if parties.shape[1] > 1 and 1 in parties
-                                  else "(non renseigné)")
+        # .fillna ici est important : sans elle, une cellule manquante resterait une vraie
+        # valeur manquante (pandas >= 3.0) et serait silencieusement exclue des agrégations
+        # (groupby/value_counts ignorent les NaN par défaut) — faussant les répartitions par
+        # rapport au total réel de compteurs installés.
+        bloc["categorie"] = (parties[0].str.strip().fillna("(non renseigné)") if 0 in parties
+                              else "(non renseigné)")
+        bloc["type_compteur"] = (parties[1].str.strip().str.upper().fillna("(non renseigné)")
+                                  if parties.shape[1] > 1 and 1 in parties else "(non renseigné)")
         bloc["solaire"] = bloc["type_compteur"].str.contains("SOLAR|SOLAIRE", regex=True, na=False)
         bloc["numero_compteur"] = raw.get("Old Consumer No.", raw.get("Holley Meter ID", pd.Series(range(n))))
         bloc["periode"] = pd.Timestamp(f["periode"]).to_period("M").to_timestamp()
@@ -246,8 +261,9 @@ def apply_column_mapping(raw: pd.DataFrame, mapping: dict) -> tuple[pd.DataFrame
     out = pd.DataFrame()
     out["localite_brute"] = raw[mapping["localite"]].astype(str).str.strip().str.upper().map(_normaliser_localite)
     out["date_installation"] = pd.to_datetime(raw[mapping["date_installation"]], errors="coerce")
-    out["site"] = raw[mapping["site"]].astype(str).str.strip() if mapping.get("site") else "(non précisé)"
-    out["type_compteur"] = (raw[mapping["type_compteur"]].astype(str).str.strip().str.upper()
+    out["site"] = (raw[mapping["site"]].astype(str).str.strip().fillna("(non précisé)")
+                   if mapping.get("site") else "(non précisé)")
+    out["type_compteur"] = (raw[mapping["type_compteur"]].astype(str).str.strip().str.upper().fillna("(non précisé)")
                              if mapping.get("type_compteur") else "(non précisé)")
     out["solaire"] = out["type_compteur"].str.contains("SOLAR|SOLAIRE", regex=True, na=False)
     out["localite"] = out["localite_brute"]
