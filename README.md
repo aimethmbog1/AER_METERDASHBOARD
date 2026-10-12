@@ -67,7 +67,7 @@ Beaucoup de localités des exports Holley ne correspondent à aucun site officie
 (sous-localités, quartiers) — c'est normal, elles passent simplement par le
 regroupement interne.
 
-## Les quatre onglets
+## Les cinq onglets
 
 - **📊 Vue d'ensemble** : indicateurs clés (compteurs installés, localités et postes
   couverts, dernière période, part de compteurs solaires), top 10 des localités,
@@ -77,12 +77,19 @@ regroupement interne.
   exportable.
 - **📅 Par période** : nouvelles installations et cumul dans le temps, avec un choix
   de granularité (mois / trimestre / année) et un filtre de plage de dates.
-- **🧭 Localité × période** : carte de chaleur croisant les 12 localités les plus
-  équipées et les périodes d'installation, pour repérer où et quand l'effort
-  d'installation s'est concentré — et le tableau croisé correspondant en CSV.
+- **🧭 Localité × période** : carte de chaleur et tableau croisé, avec un choix entre
+  le Top 12 des localités les plus équipées et la totalité des localités, pour
+  repérer où et quand l'effort d'installation s'est concentré.
+- **🏗️ Par phase** : compteurs installés par phase du projet, évolution dans le temps
+  (graphe empilé et cumul) et tableau croisé phase × période. Aucune colonne
+  « phase » n'existe dans les exports Holley : les phases sont définies par des
+  plages de dates **éditables dans la barre latérale** (« 🏗️ Phases du projet »),
+  pré-remplies en 3 tiers égaux à corriger avec les vraies dates de chaque phase.
+  Un compteur dont la période ne tombe dans aucune plage définie est compté à part,
+  sous « (hors phase) », jamais rattaché silencieusement à une phase voisine.
 
-Un export complet (toutes les lignes, colonnes nettoyées) est aussi disponible en
-bas de page une fois de vrais fichiers déposés.
+Un export complet (toutes les lignes, colonnes nettoyées, y compris la phase) est
+aussi disponible en bas de page une fois de vrais fichiers déposés.
 
 ## Déploiement
 
