@@ -92,7 +92,7 @@ Beaucoup de localités des exports Holley ne correspondent à aucun site officie
 (sous-localités, quartiers) — c'est normal, elles passent simplement par le
 regroupement interne.
 
-## Les cinq onglets
+## Les sept onglets
 
 - **📊 Vue d'ensemble** : indicateurs clés (compteurs installés, localités et postes
   couverts, dernière période, part de compteurs solaires), top 10 des localités,
@@ -101,20 +101,48 @@ regroupement interne.
   filtre par poste, répartition par type de compteur (réseau / solaire), tableau
   exportable.
 - **📅 Par période** : nouvelles installations et cumul dans le temps, avec un choix
-  de granularité (mois / trimestre / année) et un filtre de plage de dates.
+  de granularité (mois / trimestre / année), un filtre de plage de dates, et la
+  **variation vs la période précédente** (delta natif Streamlit).
 - **🧭 Localité × période** : carte de chaleur et tableau croisé, avec un choix entre
   le Top 12 des localités les plus équipées et la totalité des localités, pour
   repérer où et quand l'effort d'installation s'est concentré.
-- **🏗️ Par phase** : compteurs installés par phase du projet, évolution dans le temps
-  (graphe empilé et cumul) et tableau croisé phase × période. Aucune colonne
-  « phase » n'existe dans les exports Holley : les phases sont définies par des
-  plages de dates **éditables dans la barre latérale** (« 🏗️ Phases du projet »),
-  pré-remplies en 3 tiers égaux à corriger avec les vraies dates de chaque phase.
-  Un compteur dont la période ne tombe dans aucune plage définie est compté à part,
-  sous « (hors phase) », jamais rattaché silencieusement à une phase voisine.
+- **🏗️ Par phase** : compteurs installés par phase du projet, **objectifs vs réalisé**
+  (cibles éditables dans la barre latérale « 🎯 Objectifs du projet » — aucune cible
+  chiffrée n'existe dans les exports Holley, à saisir manuellement ; statut vert/
+  ambre/rouge à 100 % / 80 % / en dessous de l'objectif, seuils assumés par défaut),
+  évolution dans le temps (graphe empilé et cumul) et tableau croisé phase × période.
+  Aucune colonne « phase » n'existe dans les exports Holley : les phases sont
+  définies par des plages de dates **éditables dans la barre latérale**
+  (« 🏗️ Phases du projet »), pré-remplies en 3 tiers égaux à corriger avec les
+  vraies dates de chaque phase. Un compteur dont la période ne tombe dans aucune
+  plage définie est compté à part, sous « (hors phase) », jamais rattaché
+  silencieusement à une phase voisine.
+- **🌍 Par région** *(nouveau — pas une carte géographique)* : répartition des
+  compteurs par région et par antenne, à partir du rattachement **exact** entre la
+  localité (déjà corrigée) et le référentiel des 499 sites officiels. `data/
+  sites_officiels_aer.csv` ne contient aucune coordonnée GPS (contrairement au
+  classeur Excel du tableau de bord principal, que cette application ne lit
+  volontairement pas) : c'est un regroupement par région, pas une carte. Une
+  localité sans correspondance dans le référentiel apparaît sous
+  « (hors référentiel) ».
+- **🔍 Qualité des données** *(nouveau)* : anomalies à vérifier manuellement —
+  compteurs en doublon (même numéro dans plusieurs lignes, risque de double
+  comptage), postes sans nouvelle installation depuis plus de 90 jours (seuil
+  assumé par défaut), part de lignes sans localité ou poste lisible. Rien n'est
+  corrigé ni retiré automatiquement des statistiques des autres onglets — ces
+  deux indicateurs (doublons, postes inactifs) sont aussi résumés en continu
+  juste sous le bandeau central, avant même d'ouvrir cet onglet.
 
-Un export complet (toutes les lignes, colonnes nettoyées, y compris la phase) est
-aussi disponible en bas de page une fois de vrais fichiers déposés.
+Un **taux de couverture des 499 localités officielles** (combien ont au moins un
+compteur installé) est affiché en continu sous le bandeau central. Un export
+complet (toutes les lignes, colonnes nettoyées, y compris la phase) et un
+**rapport de synthèse PDF** (KPI, top localités, objectifs vs réalisé, répartition
+régionale, alertes qualité — généré à la demande, pratique pour un reporting
+institutionnel) sont disponibles en bas de page une fois de vrais fichiers déposés.
+Si la génération des images de graphiques échoue sur l'hébergement choisi (la
+librairie `kaleido` a besoin d'un Chrome headless, pas toujours disponible), le
+PDF se génère quand même, sans les graphiques, avec une note explicite plutôt
+qu'un plantage.
 
 ## Déploiement
 

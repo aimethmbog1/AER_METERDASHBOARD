@@ -45,7 +45,9 @@ revolving)."""
 from __future__ import annotations
 
 import difflib
+import os
 import re
+import tempfile
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
@@ -376,3 +378,244 @@ def lot_summary(df: pd.DataFrame) -> pd.DataFrame:
         out["Compteurs solaires"] = g["solaire"].sum().astype(int)
     out = out.reset_index().rename(columns={"nom_fichier": "Fichier (lot)"})
     return out.sort_values("Période")
+
+
+# ---------------------------------------------------------------------------
+# Objectifs par phase (aucune cible chiffrée n'existe dans les exports Holley
+# ni ailleurs dans cette application — purement déclaratif, saisi par
+# l'utilisateur dans la barre latérale, comme les phases elles-mêmes)
+# ---------------------------------------------------------------------------
+def default_targets(noms_phases: list[str]) -> pd.DataFrame:
+    """Point de départ pour le tableau d'objectifs (barre latérale) : une
+    ligne par phase définie, objectif à 0 (« pas de suivi ») par défaut."""
+    return pd.DataFrame({"Phase": noms_phases, "Objectif (compteurs)": [0] * len(noms_phases)})
+
+
+def target_status(realise: int, objectif: int) -> str:
+    """'neutral' si aucun objectif saisi (0), 'ok' si >= objectif, 'warning'
+    si >= 80 % de l'objectif, 'critical' sinon. Seuil des 80 % assumé par
+    défaut, faute de tolérance officielle communiquée — à ajuster si l'AER
+    en a une différente."""
+    if objectif <= 0:
+        return "neutral"
+    ratio = realise / objectif
+    if ratio >= 1:
+        return "ok"
+    if ratio >= 0.8:
+        return "warning"
+    return "critical"
+
+
+# ---------------------------------------------------------------------------
+# Couverture des localités officielles — combien des 499 sites du parc
+# solaire ont au moins un compteur installé
+# ---------------------------------------------------------------------------
+def coverage_stats(df: pd.DataFrame, sites_ref: pd.DataFrame) -> dict:
+    """Correspondance EXACTE entre `df['localite']` (déjà nettoyée et
+    rapprochée des sites officiels par `locality_cleanup_ui`) et
+    `sites_ref['nom']` — pas une nouvelle passe de similarité de texte : ce
+    rapprochement a déjà eu lieu, avec validation de l'utilisateur, au
+    chargement des données."""
+    if sites_ref.empty:
+        return {"couvertes": 0, "total": 0, "taux": None, "non_couvertes": []}
+    noms_officiels = set(sites_ref["nom"].astype(str).str.strip())
+    noms_installes = set(df["localite"].astype(str).str.strip()) if "localite" in df else set()
+    couvertes = noms_officiels & noms_installes
+    non_couvertes = sorted(noms_officiels - noms_installes)
+    total = len(noms_officiels)
+    return {
+        "couvertes": len(couvertes), "total": total,
+        "taux": (len(couvertes) / total) if total else None,
+        "non_couvertes": non_couvertes,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Répartition régionale — PAS une carte géographique (`sites_officiels_aer.csv`
+# ne contient aucune coordonnée GPS, contrairement au classeur Excel du
+# tableau de bord principal que cette application ne lit pas) : seulement un
+# regroupement par région/antenne à partir des colonnes déjà présentes dans
+# le référentiel des sites officiels.
+# ---------------------------------------------------------------------------
+def regional_breakdown(df: pd.DataFrame, sites_ref: pd.DataFrame) -> pd.DataFrame:
+    """Rattache chaque compteur à la région/antenne de sa localité par
+    correspondance EXACTE avec `sites_ref`. Une localité qui ne correspond à
+    aucun site officiel (sous-localité, quartier) reste « (hors
+    référentiel) » — jamais une région devinée."""
+    out = df.copy()
+    if sites_ref.empty or "localite" not in out.columns:
+        out["region"] = "(référentiel indisponible)"
+        out["antenne"] = "(référentiel indisponible)"
+        return out
+    lookup = sites_ref.drop_duplicates(subset="nom").set_index("nom")[["region", "antenne"]]
+    out = out.join(lookup, on="localite")
+    out["region"] = out["region"].fillna("(hors référentiel)")
+    out["antenne"] = out["antenne"].fillna("(hors référentiel)")
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Qualité des données — repère, ne corrige jamais automatiquement
+# ---------------------------------------------------------------------------
+def detect_duplicates(df: pd.DataFrame) -> pd.DataFrame:
+    """Compteurs dont le numéro (`numero_compteur`) apparaît plus d'une fois
+    dans l'ensemble des lots chargés — signale un double comptage possible
+    (lot déposé deux fois, chevauchement entre deux exports). Jamais
+    dédoublonné automatiquement : à vérifier manuellement."""
+    if "numero_compteur" not in df.columns or df.empty:
+        return pd.DataFrame()
+    comptes = df["numero_compteur"].value_counts()
+    doublons = comptes[comptes > 1]
+    if doublons.empty:
+        return pd.DataFrame()
+    lignes = df[df["numero_compteur"].isin(doublons.index)].copy()
+    colonnes = [c for c in ["numero_compteur", "localite", "poste", "periode", "nom_fichier"] if c in lignes.columns]
+    return lignes[colonnes].sort_values("numero_compteur")
+
+
+def detect_dormant_postes(df: pd.DataFrame, seuil_jours: int = 90) -> pd.DataFrame:
+    """Postes dont la dernière installation connue date de plus de
+    `seuil_jours` par rapport à la période la plus récente de l'ensemble des
+    données chargées — signale un poste potentiellement à l'arrêt
+    (équipement, connectivité) pendant que d'autres restent actifs. Seuil
+    assumé par défaut, faute de valeur officielle communiquée."""
+    if "poste" not in df.columns or df.empty:
+        return pd.DataFrame()
+    reference = df["periode"].max()
+    par_poste = df.groupby("poste").agg(
+        Dernière_période=("periode", "max"), Compteurs=("poste", "size"),
+    ).reset_index()
+    par_poste["Jours depuis dernière installation"] = (reference - par_poste["Dernière_période"]).dt.days
+    dormants = par_poste[par_poste["Jours depuis dernière installation"] > seuil_jours]
+    return dormants.sort_values("Jours depuis dernière installation", ascending=False)
+
+
+def data_quality_summary(df: pd.DataFrame) -> dict:
+    """Part de lignes dont la localité ou le poste n'a pas pu être lu dans le
+    fichier source (valeur sentinelle `(localité non renseignée)` /
+    `(non renseigné)` posée par `build_from_holley_files`)."""
+    total = len(df)
+    if total == 0:
+        return {}
+    non_renseigne_loc = int((df.get("localite_brute") == "(localité non renseignée)").sum()) if "localite_brute" in df else 0
+    non_renseigne_poste = int((df.get("poste") == "(non renseigné)").sum()) if "poste" in df else 0
+    return {
+        "total": total,
+        "localites_non_renseignees": non_renseigne_loc,
+        "taux_localites_non_renseignees": non_renseigne_loc / total,
+        "postes_non_renseignes": non_renseigne_poste,
+        "taux_postes_non_renseignes": non_renseigne_poste / total,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Export PDF — synthèse pour reporting institutionnel. fpdf2 : pure Python,
+# sans dépendance système (contrairement à weasyprint), donc compatible
+# Streamlit Community Cloud. `sections` : liste de dicts
+# {"titre": str, "texte": str | None, "image_bytes": bytes | None,
+#  "tableau": pd.DataFrame | None}.
+# ---------------------------------------------------------------------------
+_PDF_REMPLACEMENTS = {
+    "—": "-", "–": "-", "’": "'", "‘": "'", "“": '"', "”": '"', "…": "...", " ": " ",
+}
+
+
+def _pdf_safe(texte) -> str:
+    """La police de base (Helvetica) de fpdf2 ne couvre que le latin-1 — un
+    tiret cadratin ou une puce issue des libellés de l'interface (qui
+    contiennent aussi des emojis) fait planter l'export. Remplace la
+    ponctuation courante hors-latin-1, puis neutralise tout caractère restant
+    non supporté (emoji compris) plutôt que de faire échouer le téléchargement."""
+    s = str(texte)
+    for a, b in _PDF_REMPLACEMENTS.items():
+        s = s.replace(a, b)
+    return s.encode("latin-1", errors="replace").decode("latin-1")
+
+
+def build_pdf_report(titre: str, sous_titre: str, genere_le: str,
+                      kpis: list[tuple[str, str]], sections: list[dict]) -> bytes:
+    from fpdf import FPDF
+
+    pdf = FPDF(format="A4", unit="mm")
+    pdf.set_auto_page_break(auto=True, margin=18)
+    pdf.add_page()
+
+    pdf.set_font("Helvetica", "B", 18)
+    pdf.set_text_color(31, 56, 100)
+    pdf.cell(0, 10, _pdf_safe(titre), ln=True)
+    pdf.set_font("Helvetica", "", 11)
+    pdf.set_text_color(90, 90, 90)
+    pdf.cell(0, 7, _pdf_safe(sous_titre), ln=True)
+    pdf.cell(0, 6, _pdf_safe(f"Genere le {genere_le}"), ln=True)
+    pdf.ln(4)
+
+    if kpis:
+        col_w = (pdf.w - 2 * pdf.l_margin) / len(kpis)
+        y0 = pdf.get_y()
+        pdf.set_font("Helvetica", "B", 13)
+        pdf.set_text_color(31, 56, 100)
+        x = pdf.l_margin
+        for _, value in kpis:
+            pdf.set_xy(x, y0)
+            pdf.multi_cell(col_w, 6, _pdf_safe(value), align="C")
+            x += col_w
+        y_labels = y0 + 8
+        pdf.set_font("Helvetica", "", 8)
+        pdf.set_text_color(110, 110, 110)
+        x = pdf.l_margin
+        y_apres_labels = y_labels
+        for label, _ in kpis:
+            # `y_labels` fixe, pas `pdf.get_y()` repris d'une itération à l'autre :
+            # sinon un libellé qui passe sur 2 lignes décale verticalement tous les
+            # suivants (bug repéré en comparant le PDF rendu à la maquette).
+            pdf.set_xy(x, y_labels)
+            pdf.multi_cell(col_w, 4, _pdf_safe(label), align="C")
+            y_apres_labels = max(y_apres_labels, pdf.get_y())
+            x += col_w
+        pdf.set_y(y_apres_labels)
+        pdf.ln(6)
+        pdf.set_draw_color(200, 200, 200)
+        pdf.line(pdf.l_margin, pdf.get_y(), pdf.w - pdf.r_margin, pdf.get_y())
+        pdf.ln(4)
+
+    for section in sections:
+        pdf.set_font("Helvetica", "B", 12)
+        pdf.set_text_color(31, 56, 100)
+        pdf.cell(0, 8, _pdf_safe(section["titre"]), ln=True)
+        if section.get("texte"):
+            pdf.set_font("Helvetica", "", 9)
+            pdf.set_text_color(60, 60, 60)
+            pdf.multi_cell(0, 5, _pdf_safe(section["texte"]))
+        if section.get("image_bytes"):
+            tmp_path = None
+            try:
+                with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                    tmp.write(section["image_bytes"])
+                    tmp_path = tmp.name
+                pdf.image(tmp_path, w=pdf.w - 2 * pdf.l_margin)
+            finally:
+                if tmp_path:
+                    os.unlink(tmp_path)
+        if section.get("tableau") is not None and not section["tableau"].empty:
+            df_t = section["tableau"]
+            col_w_t = (pdf.w - 2 * pdf.l_margin) / len(df_t.columns)
+            pdf.set_font("Helvetica", "B", 8)
+            pdf.set_fill_color(230, 236, 245)
+            pdf.set_text_color(31, 56, 100)
+            for col in df_t.columns:
+                pdf.cell(col_w_t, 6, _pdf_safe(str(col)[:28]), border=1, fill=True)
+            pdf.ln()
+            pdf.set_font("Helvetica", "", 8)
+            pdf.set_text_color(40, 40, 40)
+            for _, row in df_t.iterrows():
+                for val in row:
+                    pdf.cell(col_w_t, 5.5, _pdf_safe(str(val)[:28]), border=1)
+                pdf.ln()
+        pdf.ln(5)
+
+    pdf.set_y(-15)
+    pdf.set_font("Helvetica", "I", 7)
+    pdf.set_text_color(140, 140, 140)
+    pdf.cell(0, 8, "AER - Statistiques des compteurs (export Holley) - document genere automatiquement", align="C")
+
+    return bytes(pdf.output())

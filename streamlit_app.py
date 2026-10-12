@@ -14,7 +14,9 @@ from utils.compteurs import (
     read_excel_sheet_names, load_excel,
     est_format_holley, parse_date_from_filename, build_from_holley_files,
     apply_column_mapping, locality_cleanup_ui, lot_summary, load_official_sites,
-    default_phases, assign_phases,
+    default_phases, assign_phases, default_targets, target_status,
+    coverage_stats, regional_breakdown, detect_duplicates, detect_dormant_postes,
+    data_quality_summary, build_pdf_report,
 )
 
 st.set_page_config(page_title=APP_TITLE, page_icon=PAGE_ICON, layout="wide")
@@ -169,6 +171,40 @@ with st.sidebar.expander("Définir les phases (dates éditables)", expanded=Fals
 df["phase"] = assign_phases(df, phases_editees)
 
 # =============================================================================
+# Barre latérale — objectifs par phase (aucune cible chiffrée n'existe dans
+# les exports Holley : purement déclaratif, comme les phases elles-mêmes)
+# =============================================================================
+noms_phases_actuelles = [str(p).strip() for p in phases_editees["Phase"].tolist() if pd.notna(p) and str(p).strip()]
+st.sidebar.markdown("### 🎯 Objectifs du projet")
+if "cpt_targets_df" not in st.session_state:
+    st.session_state["cpt_targets_df"] = default_targets(noms_phases_actuelles)
+else:
+    existant = st.session_state["cpt_targets_df"]
+    deja_connus = existant["Phase"].tolist()
+    nouveaux_noms = [n for n in noms_phases_actuelles if n not in deja_connus]
+    if nouveaux_noms:
+        existant = pd.concat(
+            [existant, default_targets(nouveaux_noms)], ignore_index=True,
+        )
+    st.session_state["cpt_targets_df"] = existant[existant["Phase"].isin(noms_phases_actuelles)].reset_index(drop=True)
+with st.sidebar.expander("Définir les objectifs (cibles éditables)", expanded=False):
+    st.caption(
+        "Aucun objectif chiffré n'existe dans les exports Holley ni ailleurs dans cette application — "
+        "saisis la cible de compteurs pour chaque phase (0 = pas de suivi d'objectif pour cette phase)."
+    )
+    targets_editees = st.data_editor(
+        st.session_state["cpt_targets_df"], hide_index=True, use_container_width=True,
+        column_config={
+            "Phase": st.column_config.TextColumn("Phase", disabled=True),
+            "Objectif (compteurs)": st.column_config.NumberColumn("Objectif (compteurs)", min_value=0, step=10),
+        },
+        key="cpt_targets_editor",
+    )
+    st.session_state["cpt_targets_df"] = targets_editees
+
+sites_ref = load_official_sites()
+
+# =============================================================================
 # KPI globaux
 # =============================================================================
 total = len(df)
@@ -226,11 +262,53 @@ if nb_postes:
     )
     flow_diagram(flux_postes, nb_localites, total, key="hero_flow")
 
+# =============================================================================
+# Bandeau de contrôle — couverture du référentiel officiel + qualité des
+# données, toujours visible (pas besoin d'ouvrir un onglet pour les voir)
+# =============================================================================
+couverture = coverage_stats(df, sites_ref)
+doublons_apercu = detect_duplicates(df)
+dormants_apercu = detect_dormant_postes(df)
+
+st.write("")
+ctrl1, ctrl2, ctrl3 = st.columns(3)
+with ctrl1:
+    if couverture["taux"] is not None:
+        mini_metric(
+            "📊 Couverture localités officielles",
+            f"{couverture['couvertes']} / {couverture['total']} ({couverture['taux'] * 100:.0f} %)",
+        )
+    else:
+        mini_metric("📊 Couverture localités officielles", "—")
+with ctrl2:
+    statut_doublons = "critical" if len(doublons_apercu) else "ok"
+    status_badge(
+        f"{len(doublons_apercu)} compteur(s) en doublon" if len(doublons_apercu) else "Aucun doublon détecté",
+        statut_doublons,
+    )
+with ctrl3:
+    statut_dormants = "warning" if len(dormants_apercu) else "ok"
+    status_badge(
+        f"{len(dormants_apercu)} poste(s) inactif(s) (> 90 j)" if len(dormants_apercu) else "Tous les postes actifs",
+        statut_dormants,
+    )
+st.caption("Détail et méthode dans l'onglet « 🔍 Qualité des données ».")
+
 st.write("")
 
-tab_vue, tab_localite, tab_periode, tab_croisement, tab_phase = st.tabs([
+tab_vue, tab_localite, tab_periode, tab_croisement, tab_phase, tab_region, tab_qualite = st.tabs([
     "📊 Vue d'ensemble", "📍 Par localité", "📅 Par période", "🧭 Localité × période", "🏗️ Par phase",
+    "🌍 Par région", "🔍 Qualité des données",
 ])
+
+# Valeurs par défaut (utilisées par le rapport PDF plus bas) : certains
+# blocs ci-dessous ne s'exécutent que si l'utilisateur a défini des phases —
+# sans ça, ces variables n'existeraient jamais.
+objectifs_definis = pd.DataFrame()
+fusion_obj = pd.DataFrame()
+df_par_phase = pd.DataFrame(columns=["Phase", "Compteurs installés"])
+par_region = pd.DataFrame(columns=["Région", "Compteurs installés"])
+ordre_phases = []
 
 # -----------------------------------------------------------------------
 # Vue d'ensemble
@@ -377,12 +455,27 @@ with tab_periode:
 
         moyenne = par_bucket["Nouvelles installations"].mean()
         meilleure = par_bucket.loc[par_bucket["Nouvelles installations"].idxmax()]
+
+        # Variation vs la période précédente (le dernier "bucket" affiché contre
+        # celui juste avant — nécessite au moins 2 buckets dans la plage choisie ;
+        # delta natif Streamlit, pas de composant personnalisé nécessaire).
+        delta_texte = None
+        if len(par_bucket) >= 2:
+            dernier = int(par_bucket["Nouvelles installations"].iloc[-1])
+            precedent = int(par_bucket["Nouvelles installations"].iloc[-2])
+            if precedent:
+                variation = (dernier - precedent) / precedent * 100
+                delta_texte = f"{variation:+.0f} % vs {granularite.lower()} précédent(e)"
+            else:
+                delta_texte = f"+{dernier} vs {granularite.lower()} précédent(e) (nul)"
+
         kpi_row([
             ("🔌 Installations sur la période", f"{len(periode_df):,}".replace(",", " "), None),
             (f"📈 Moyenne par {granularite.lower()}", f"{moyenne:.0f}", None),
             (f"🏆 Meilleur(e) {granularite.lower()}",
              meilleure["bucket"].strftime("%m/%Y") if granularite != "Année" else meilleure["bucket"].strftime("%Y"),
              f"{int(meilleure['Nouvelles installations'])} installations"),
+            (f"↕️ Dernier {granularite.lower()} vs précédent", f"{int(par_bucket['Nouvelles installations'].iloc[-1]):,}".replace(",", " "), delta_texte),
         ])
 
         st.write("")
@@ -496,6 +589,40 @@ with tab_phase:
         st.plotly_chart(fig, use_container_width=True)
 
         st.write("")
+        section_title("OBJECTIFS VS RÉALISÉ")
+        objectifs_definis = targets_editees[targets_editees["Objectif (compteurs)"] > 0]
+        if objectifs_definis.empty:
+            st.caption(
+                "Aucun objectif chiffré saisi — définis une cible par phase dans la barre latérale "
+                "(« 🎯 Objectifs du projet ») pour voir l'écart réalisé / objectif ici."
+            )
+        else:
+            fusion_obj = targets_editees.merge(df_par_phase, on="Phase", how="left")
+            fusion_obj["Compteurs installés"] = fusion_obj["Compteurs installés"].fillna(0).astype(int)
+            badges_cols = st.columns(len(fusion_obj)) if len(fusion_obj) else []
+            for col, (_, ligne) in zip(badges_cols, fusion_obj.iterrows()):
+                with col:
+                    statut = target_status(int(ligne["Compteurs installés"]), int(ligne["Objectif (compteurs)"]))
+                    libelle = (
+                        f"{ligne['Phase']} — pas d'objectif" if statut == "neutral"
+                        else f"{ligne['Phase']} — {ligne['Compteurs installés']}/{ligne['Objectif (compteurs)']}"
+                    )
+                    status_badge(libelle, statut)
+            st.write("")
+            fig_obj = go.Figure()
+            fig_obj.add_bar(x=fusion_obj["Phase"], y=fusion_obj["Objectif (compteurs)"], name="Objectif",
+                             marker_color=GREY, marker_opacity=.55)
+            fig_obj.add_bar(x=fusion_obj["Phase"], y=fusion_obj["Compteurs installés"], name="Réalisé",
+                             marker_color=NAVY)
+            fig_obj.update_layout(barmode="group")
+            fig_obj = plotly_base_layout(fig_obj, height=340, legend=True)
+            st.plotly_chart(fig_obj, use_container_width=True)
+            st.caption(
+                "Seuils assumés par défaut (aucune tolérance officielle communiquée) : vert si réalisé ≥ "
+                "objectif, ambre si ≥ 80 % de l'objectif, rouge en dessous."
+            )
+
+        st.write("")
         section_title("ÉVOLUTION DES INSTALLATIONS PAR PHASE, DANS LE TEMPS")
         granularite_phase = st.radio(
             "Granularité", ["Mois", "Trimestre", "Année"], horizontal=True, index=0, key="cpt_gran_phase",
@@ -542,6 +669,109 @@ with tab_phase:
                 "compteurs_phase_x_periode.csv", "text/csv", key="cpt_dl_phase_periode",
             )
 
+# -----------------------------------------------------------------------
+# Par région — PAS une carte : sites_officiels_aer.csv ne contient aucune
+# coordonnée GPS (contrairement au classeur Excel du tableau de bord
+# principal, que cette application ne lit volontairement pas). Regroupement
+# par région/antenne à partir du référentiel officiel uniquement.
+# -----------------------------------------------------------------------
+with tab_region:
+    section_title("RÉPARTITION PAR RÉGION / ANTENNE")
+    if sites_ref.empty:
+        st.info("Référentiel des sites officiels indisponible — impossible de rattacher les localités à une région.")
+    else:
+        st.caption(
+            "⚠️ Ce n'est **pas une carte géographique** — `data/sites_officiels_aer.csv` ne contient aucune "
+            "coordonnée GPS, seulement région / département / antenne. Rattachement par correspondance "
+            "**exacte** avec le nom de localité déjà corrigé : une localité qui ne correspond à aucun des "
+            "499 sites officiels (sous-localité, quartier) apparaît sous « (hors référentiel) », jamais "
+            "rattachée à une région devinée."
+        )
+        df_region = regional_breakdown(df, sites_ref)
+        hors_ref = int((df_region["region"] == "(hors référentiel)").sum())
+        if hors_ref:
+            st.warning(f"{hors_ref} compteur(s) dans des localités hors du référentiel des 499 sites officiels.")
+
+        par_region = df_region["region"].value_counts().reset_index()
+        par_region.columns = ["Région", "Compteurs installés"]
+        couleurs_region = [GREY if r == "(hors référentiel)" else NAVY for r in par_region["Région"]]
+        fig_region = px.bar(par_region.sort_values("Compteurs installés"), x="Compteurs installés", y="Région",
+                             orientation="h", text="Compteurs installés")
+        fig_region.update_traces(marker_color=couleurs_region, textposition="outside")
+        fig_region = plotly_base_layout(fig_region, height=max(300, 34 * len(par_region)), legend=False)
+        st.plotly_chart(fig_region, use_container_width=True)
+
+        if df_region["antenne"].nunique() > 1:
+            section_title("RÉPARTITION PAR ANTENNE")
+            par_antenne = df_region["antenne"].value_counts().reset_index()
+            par_antenne.columns = ["Antenne", "Compteurs installés"]
+            couleurs_antenne = [GREY if a == "(hors référentiel)" else BLUE for a in par_antenne["Antenne"]]
+            fig_antenne = px.bar(par_antenne.sort_values("Compteurs installés"), x="Compteurs installés", y="Antenne",
+                                  orientation="h", text="Compteurs installés")
+            fig_antenne.update_traces(marker_color=couleurs_antenne, textposition="outside")
+            fig_antenne = plotly_base_layout(fig_antenne, height=max(280, 34 * len(par_antenne)), legend=False)
+            st.plotly_chart(fig_antenne, use_container_width=True)
+
+        st.write("")
+        section_title("TABLEAU DÉTAILLÉ")
+        tableau_region = par_region.copy()
+        st.dataframe(tableau_region, use_container_width=True, hide_index=True)
+        st.download_button("⬇️ Télécharger ce tableau (CSV)", tableau_region.to_csv(index=False).encode("utf-8"),
+                            "compteurs_par_region.csv", "text/csv", key="cpt_dl_region")
+
+# -----------------------------------------------------------------------
+# Qualité des données — repère les anomalies, ne corrige jamais rien
+# automatiquement
+# -----------------------------------------------------------------------
+with tab_qualite:
+    section_title("QUALITÉ DES DONNÉES CHARGÉES")
+    st.caption(
+        "Cet onglet signale des anomalies potentielles pour vérification manuelle — rien n'est corrigé ni "
+        "retiré automatiquement des statistiques des autres onglets."
+    )
+
+    qualite = data_quality_summary(df)
+    kpi_row([
+        ("🔁 Compteurs en doublon", str(len(doublons_apercu)), None),
+        ("💤 Postes inactifs (> 90 j)", str(len(dormants_apercu)), None),
+        ("❓ Localités non renseignées", f"{qualite.get('taux_localites_non_renseignees', 0) * 100:.1f} %", None),
+        ("❓ Postes non renseignés", f"{qualite.get('taux_postes_non_renseignes', 0) * 100:.1f} %", None),
+    ])
+
+    st.write("")
+    section_title("COMPTEURS EN DOUBLON (MÊME NUMÉRO DANS PLUSIEURS LIGNES)")
+    if doublons_apercu.empty:
+        st.success("Aucun numéro de compteur en double détecté dans les lots chargés.")
+    else:
+        st.warning(
+            "Un même numéro de compteur apparaît plusieurs fois — vérifie s'il s'agit d'un lot déposé en "
+            "double ou d'un chevauchement entre deux exports avant d'interpréter les totaux."
+        )
+        st.dataframe(doublons_apercu, use_container_width=True, hide_index=True, height=min(360, 38 * (len(doublons_apercu) + 1)))
+        st.download_button("⬇️ Télécharger ces lignes (CSV)", doublons_apercu.to_csv(index=False).encode("utf-8"),
+                            "compteurs_doublons.csv", "text/csv", key="cpt_dl_doublons")
+
+    st.write("")
+    section_title("POSTES SANS NOUVELLE INSTALLATION DEPUIS PLUS DE 90 JOURS")
+    if dormants_apercu.empty:
+        st.success("Tous les postes ont une installation récente (moins de 90 jours avant la dernière période connue).")
+    else:
+        st.caption("Seuil de 90 jours assumé par défaut (aucune valeur officielle communiquée) — peut indiquer un "
+                   "poste à l'arrêt (équipement, connectivité) pendant que d'autres restent actifs.")
+        st.dataframe(
+            dormants_apercu, use_container_width=True, hide_index=True,
+            column_config={"Dernière_période": st.column_config.DateColumn("Dernière période", format="MM/YYYY")},
+        )
+
+    st.write("")
+    section_title("VALEURS NON RENSEIGNÉES")
+    st.markdown(
+        f"- **{qualite.get('localites_non_renseignees', 0)}** ligne(s) sans localité lisible dans le fichier "
+        f"source ({qualite.get('taux_localites_non_renseignees', 0) * 100:.1f} % du total).\n"
+        f"- **{qualite.get('postes_non_renseignes', 0)}** ligne(s) sans poste lisible "
+        f"({qualite.get('taux_postes_non_renseignes', 0) * 100:.1f} % du total)."
+    )
+
 st.write("")
 with st.expander("📄 Export complet des compteurs (toutes colonnes nettoyées)"):
     colonnes_export = [c for c in ["numero_compteur", "localite", "poste", "phase", "categorie", "type_compteur",
@@ -549,5 +779,86 @@ with st.expander("📄 Export complet des compteurs (toutes colonnes nettoyées)
     st.dataframe(df[colonnes_export], use_container_width=True, hide_index=True, height=400)
     st.download_button("⬇️ Télécharger toutes les lignes (CSV)", df[colonnes_export].to_csv(index=False).encode("utf-8"),
                         f"compteurs_export_{date.today().isoformat()}.csv", "text/csv", key="cpt_dl_export")
+
+st.write("")
+with st.expander("📄 Rapport de synthèse (PDF)"):
+    st.caption(
+        "Génère un PDF compact (KPI globaux, top localités, objectifs vs réalisé par phase, répartition "
+        "régionale, alertes qualité) — pour un reporting institutionnel sans recomposer ces chiffres à la "
+        "main. Généré à la demande (pas à chaque interaction) : relance la génération après un changement "
+        "de données ou de filtre."
+    )
+    if st.button("🖨️ Générer le rapport PDF", key="cpt_gen_pdf"):
+        with st.spinner("Génération du PDF…"):
+            fig_pdf_phase = px.bar(
+                df_par_phase, x="Phase", y="Compteurs installés", text="Compteurs installés",
+                category_orders={"Phase": ordre_phases} if ordre_phases else None,
+            )
+            fig_pdf_phase.update_traces(
+                marker_color=[GREY if p == "(hors phase)" else NAVY for p in df_par_phase["Phase"]]
+            )
+            fig_pdf_phase = plotly_base_layout(fig_pdf_phase, height=320, legend=False)
+
+            top10_pdf = df["localite"].value_counts().head(10).reset_index()
+            top10_pdf.columns = ["Localité", "Compteurs installés"]
+            fig_pdf_top = px.bar(top10_pdf.sort_values("Compteurs installés"), x="Compteurs installés", y="Localité",
+                                  orientation="h", color_discrete_sequence=[NAVY])
+            fig_pdf_top = plotly_base_layout(fig_pdf_top, height=320, legend=False)
+
+            try:
+                img_top = fig_pdf_top.to_image(format="png", width=900, height=420, scale=2)
+                img_phase = fig_pdf_phase.to_image(format="png", width=900, height=420, scale=2) if not df_par_phase.empty else None
+                erreur_image = None
+            except Exception as e:  # noqa: BLE001 — kaleido absent/indisponible sur l'hébergement : PDF sans graphiques plutôt qu'un plantage
+                img_top, img_phase, erreur_image = None, None, str(e)
+
+            sections_pdf = []
+            if erreur_image:
+                sections_pdf.append({
+                    "titre": "Graphiques indisponibles",
+                    "texte": f"Rendu des graphiques impossible sur cet hebergement (kaleido) : {erreur_image}",
+                })
+            if img_top:
+                sections_pdf.append({"titre": "Top 10 des localites", "image_bytes": img_top})
+            if img_phase:
+                sections_pdf.append({"titre": "Compteurs installes par phase", "image_bytes": img_phase})
+            if not objectifs_definis.empty:
+                sections_pdf.append({
+                    "titre": "Objectifs vs realise par phase",
+                    "tableau": fusion_obj[["Phase", "Objectif (compteurs)", "Compteurs installés"]],
+                })
+            if not par_region.empty:
+                sections_pdf.append({"titre": "Repartition par region", "tableau": par_region})
+            sections_pdf.append({
+                "titre": "Alertes qualite des donnees",
+                "texte": (
+                    f"{len(doublons_apercu)} compteur(s) en doublon detecte(s). "
+                    f"{len(dormants_apercu)} poste(s) sans nouvelle installation depuis plus de 90 jours. "
+                    f"{qualite.get('taux_localites_non_renseignees', 0) * 100:.1f}% des lignes sans localite "
+                    f"lisible, {qualite.get('taux_postes_non_renseignes', 0) * 100:.1f}% sans poste lisible."
+                ),
+            })
+
+            pdf_bytes = build_pdf_report(
+                "Statistiques des compteurs - AER",
+                f"Rapport de synthese genere depuis l'application - {len(uploaded_files)} fichier(s) charge(s)",
+                date.today().strftime("%d/%m/%Y"),
+                [
+                    ("Compteurs installes", f"{total:,}".replace(",", " ")),
+                    ("Localites couvertes", str(nb_localites)),
+                    ("Couverture referentiel",
+                     f"{couverture['taux'] * 100:.0f}%" if couverture["taux"] is not None else "-"),
+                    ("Derniere periode", derniere_periode.strftime("%m/%Y") if pd.notna(derniere_periode) else "-"),
+                ],
+                sections_pdf,
+            )
+            st.session_state["cpt_pdf_bytes"] = pdf_bytes
+        st.success("Rapport généré ci-dessous.")
+
+    if "cpt_pdf_bytes" in st.session_state:
+        st.download_button(
+            "⬇️ Télécharger le rapport (PDF)", st.session_state["cpt_pdf_bytes"],
+            f"rapport_compteurs_{date.today().isoformat()}.pdf", "application/pdf", key="cpt_dl_pdf",
+        )
 
 render_sidebar_footer()

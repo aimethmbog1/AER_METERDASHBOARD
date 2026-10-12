@@ -364,8 +364,13 @@ def plotly_base_layout(fig: go.Figure, height: int = 380, legend: bool = True) -
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font=dict(color=INK_SECONDARY)),
         hoverlabel=dict(bgcolor=BG_PANEL, font_size=12, font_color=INK_PRIMARY, bordercolor=BORDER_HAIRLINE),
     )
-    fig.update_xaxes(showgrid=False, zeroline=False, color=INK_MUTED, linecolor=BASELINE)
-    fig.update_yaxes(showgrid=True, gridcolor=GRIDLINE, zeroline=False, color=INK_MUTED, linecolor=BASELINE)
+    # automargin=True : indispensable pour l'export PNG statique (rapport PDF) —
+    # contrairement au rendu interactif dans le navigateur, qui agrandit déjà la
+    # marge pour les libellés d'axe, le rendu statique kaleido respecte la marge
+    # fixe telle quelle et tronque les libellés sans ce réglage (repéré en
+    # vérifiant le PDF généré, où les noms de localités se chevauchaient).
+    fig.update_xaxes(showgrid=False, zeroline=False, color=INK_MUTED, linecolor=BASELINE, automargin=True)
+    fig.update_yaxes(showgrid=True, gridcolor=GRIDLINE, zeroline=False, color=INK_MUTED, linecolor=BASELINE, automargin=True)
     return fig
 
 
