@@ -8,7 +8,7 @@ import streamlit as st
 from utils.theme import (
     PAGE_ICON, APP_TITLE, NAVY, BLUE, GOLD, GREY, CATEGORICAL, BG_SURFACE,
     inject_base_style, section_title, kpi_row, mini_metric, status_badge,
-    animated_counter, flow_diagram, plotly_base_layout, render_sidebar_footer,
+    animated_counter, flow_diagram, saturation_bar, plotly_base_layout, render_sidebar_footer,
 )
 from utils.compteurs import (
     read_excel_sheet_names, load_excel,
@@ -17,6 +17,8 @@ from utils.compteurs import (
     default_phases, assign_phases, default_targets, target_status,
     coverage_stats, regional_breakdown, detect_duplicates, detect_dormant_postes,
     data_quality_summary, build_pdf_report,
+    load_puissances_sites, saturation_par_site, WATTS_PAR_COMPTEUR,
+    SEUIL_SATURATION_AVERTISSEMENT,
 )
 
 st.set_page_config(page_title=APP_TITLE, page_icon=PAGE_ICON, layout="wide")
@@ -203,6 +205,8 @@ with st.sidebar.expander("Définir les objectifs (cibles éditables)", expanded=
     st.session_state["cpt_targets_df"] = targets_editees
 
 sites_ref = load_official_sites()
+puissances_ref = load_puissances_sites()
+df_saturation = saturation_par_site(df, sites_ref, puissances_ref)
 
 # =============================================================================
 # KPI globaux
@@ -270,8 +274,10 @@ couverture = coverage_stats(df, sites_ref)
 doublons_apercu = detect_duplicates(df)
 dormants_apercu = detect_dormant_postes(df)
 
+nb_sites_satures = int((df_saturation["statut"] == "critical").sum()) if not df_saturation.empty else 0
+
 st.write("")
-ctrl1, ctrl2, ctrl3 = st.columns(3)
+ctrl1, ctrl2, ctrl3, ctrl4 = st.columns(4)
 with ctrl1:
     if couverture["taux"] is not None:
         mini_metric(
@@ -292,13 +298,22 @@ with ctrl3:
         f"{len(dormants_apercu)} poste(s) inactif(s) (> 90 j)" if len(dormants_apercu) else "Tous les postes actifs",
         statut_dormants,
     )
-st.caption("Détail et méthode dans l'onglet « 🔍 Qualité des données ».")
+with ctrl4:
+    if df_saturation.empty:
+        status_badge("Saturation non calculable", "neutral")
+    else:
+        statut_saturation_apercu = "critical" if nb_sites_satures else "ok"
+        status_badge(
+            f"{nb_sites_satures} site(s) en sursaturation" if nb_sites_satures else "Aucun site en sursaturation",
+            statut_saturation_apercu, pulse=bool(nb_sites_satures),
+        )
+st.caption("Détail et méthode dans les onglets « ⚡ Saturation des sites » et « 🔍 Qualité des données ».")
 
 st.write("")
 
-tab_vue, tab_localite, tab_periode, tab_croisement, tab_phase, tab_region, tab_qualite = st.tabs([
+tab_vue, tab_localite, tab_periode, tab_croisement, tab_phase, tab_region, tab_saturation, tab_qualite = st.tabs([
     "📊 Vue d'ensemble", "📍 Par localité", "📅 Par période", "🧭 Localité × période", "🏗️ Par phase",
-    "🌍 Par région", "🔍 Qualité des données",
+    "🌍 Par région", "⚡ Saturation des sites", "🔍 Qualité des données",
 ])
 
 # Valeurs par défaut (utilisées par le rapport PDF plus bas) : certains
@@ -689,8 +704,12 @@ with tab_region:
         )
         df_region = regional_breakdown(df, sites_ref)
         hors_ref = int((df_region["region"] == "(hors référentiel)").sum())
-        if hors_ref:
-            st.warning(f"{hors_ref} compteur(s) dans des localités hors du référentiel des 499 sites officiels.")
+        status_badge(
+            f"{hors_ref} compteur(s) hors référentiel (sous-localités)" if hors_ref
+            else "Toutes les localités installées correspondent à un site officiel",
+            "warning" if hors_ref else "ok",
+        )
+        st.write("")
 
         par_region = df_region["region"].value_counts().reset_index()
         par_region.columns = ["Région", "Compteurs installés"]
@@ -720,6 +739,95 @@ with tab_region:
                             "compteurs_par_region.csv", "text/csv", key="cpt_dl_region")
 
 # -----------------------------------------------------------------------
+# Saturation des sites — capacité théorique (puissance installée ÷ 400 W
+# par compteur, convention communiquée par l'utilisateur) vs compteurs
+# réellement installés. Ne concerne que les localités qui correspondent à
+# un site officiel (seuls sites dont la puissance est connue) ; une
+# localité hors référentiel est déjà signalée ailleurs (onglet Par région).
+# -----------------------------------------------------------------------
+with tab_saturation:
+    section_title("TAUX DE SATURATION DES SITES")
+    if puissances_ref.empty:
+        st.info("Référentiel des puissances installées indisponible — impossible de calculer la saturation.")
+    elif df_saturation.empty:
+        st.info("Référentiel des sites officiels indisponible, ou aucune localité installée ne correspond à un "
+                "site officiel — impossible de calculer la saturation.")
+    else:
+        status_badge(
+            f"Convention : {WATTS_PAR_COMPTEUR} W admis par compteur — capacité théorique = puissance du site "
+            "(kWc) × 1000 ÷ 400, arrondie à l'entier inférieur.",
+            "info",
+        )
+        st.caption(
+            "Règle de dimensionnement communiquée par l'utilisateur, pas une valeur officielle retrouvée dans "
+            "les fichiers de cette application — à corriger ici si une autre convention s'applique. Seuls les "
+            "sites du référentiel officiel apparaissent (puissance connue) ; une localité installée hors "
+            "référentiel (sous-localité, quartier) reste signalée dans l'onglet « 🌍 Par région », jamais "
+            "ici avec une capacité devinée."
+        )
+
+        nb_critiques = int((df_saturation["statut"] == "critical").sum())
+        nb_alertes = int((df_saturation["statut"] == "warning").sum())
+        # Moyenne calculée UNIQUEMENT sur les sites ayant au moins un compteur
+        # installé — sur les 498 sites référencés, l'incluaient aurait noyé la
+        # moyenne sous les ~490 sites jamais encore équipés (0 %), rendant le
+        # chiffre incohérent avec son propre libellé.
+        saturation_connue = df_saturation.loc[df_saturation["compteurs_installes"] > 0, "taux_saturation"].dropna()
+        saturation_moyenne = f"{saturation_connue.mean() * 100:.0f} %" if not saturation_connue.empty else "—"
+
+        kpi_row([
+            ("⚡ Sites en sursaturation (≥ 100 %)", str(nb_critiques), None),
+            (f"🟠 Sites proches de la capacité (≥ {SEUIL_SATURATION_AVERTISSEMENT * 100:.0f} %)", str(nb_alertes), None),
+            ("📈 Saturation moyenne (sites installés)", saturation_moyenne, None),
+            ("🏗️ Sites référencés (puissance connue)", str(len(df_saturation)), None),
+        ])
+
+        st.write("")
+        section_title("SITES LES PLUS SATURÉS")
+        top_saturation = df_saturation.head(15)
+        if top_saturation.empty:
+            st.caption("Aucun site installé à afficher.")
+        else:
+            for _, ligne in top_saturation.iterrows():
+                saturation_bar(
+                    ligne["nom"],
+                    ligne["taux_saturation"],
+                    ligne["statut"],
+                    detail=f"{int(ligne['compteurs_installes'])}/{int(ligne['max_compteurs'])} compteurs · "
+                            f"{ligne['puissance_kwc']:g} kWc",
+                )
+
+        if nb_critiques:
+            st.write("")
+            section_title("SITES EN DÉPASSEMENT DE CAPACITÉ THÉORIQUE")
+            st.warning(
+                f"{nb_critiques} site(s) comptent plus de compteurs installés que leur capacité théorique ne "
+                "l'admet — à vérifier : extension de puissance non répercutée ici, compteurs partagés avec un "
+                "poste voisin, ou dimensionnement initial sous-estimé."
+            )
+            colonnes_critiques = ["nom", "region", "antenne", "puissance_kwc", "max_compteurs",
+                                   "compteurs_installes", "taux_saturation"]
+            tableau_critiques = df_saturation[df_saturation["statut"] == "critical"][colonnes_critiques].copy()
+            tableau_critiques["taux_saturation"] = (tableau_critiques["taux_saturation"] * 100).round(0)
+            tableau_critiques.columns = ["Site", "Région", "Antenne", "Puissance (kWc)", "Capacité théorique",
+                                          "Compteurs installés", "Saturation (%)"]
+            st.dataframe(tableau_critiques, use_container_width=True, hide_index=True)
+
+        st.write("")
+        with st.expander("📋 Voir tous les sites référencés (puissance, capacité, saturation)"):
+            colonnes_toutes = ["nom", "region", "antenne", "puissance_kwc", "max_compteurs",
+                                "compteurs_installes", "taux_saturation", "statut"]
+            tableau_complet = df_saturation[colonnes_toutes].copy()
+            tableau_complet["taux_saturation"] = (tableau_complet["taux_saturation"] * 100).round(1)
+            tableau_complet.columns = ["Site", "Région", "Antenne", "Puissance (kWc)", "Capacité théorique",
+                                        "Compteurs installés", "Saturation (%)", "Statut"]
+            st.dataframe(tableau_complet, use_container_width=True, hide_index=True, height=420)
+            st.download_button(
+                "⬇️ Télécharger ce tableau (CSV)", tableau_complet.to_csv(index=False).encode("utf-8"),
+                "compteurs_saturation_sites.csv", "text/csv", key="cpt_dl_saturation",
+            )
+
+# -----------------------------------------------------------------------
 # Qualité des données — repère les anomalies, ne corrige jamais rien
 # automatiquement
 # -----------------------------------------------------------------------
@@ -741,11 +849,11 @@ with tab_qualite:
     st.write("")
     section_title("COMPTEURS EN DOUBLON (MÊME NUMÉRO DANS PLUSIEURS LIGNES)")
     if doublons_apercu.empty:
-        st.success("Aucun numéro de compteur en double détecté dans les lots chargés.")
+        status_badge("Aucun numéro de compteur en double détecté dans les lots chargés", "ok")
     else:
-        st.warning(
-            "Un même numéro de compteur apparaît plusieurs fois — vérifie s'il s'agit d'un lot déposé en "
-            "double ou d'un chevauchement entre deux exports avant d'interpréter les totaux."
+        status_badge(
+            "Vérifie s'il s'agit d'un lot déposé en double ou d'un chevauchement entre deux exports",
+            "critical",
         )
         st.dataframe(doublons_apercu, use_container_width=True, hide_index=True, height=min(360, 38 * (len(doublons_apercu) + 1)))
         st.download_button("⬇️ Télécharger ces lignes (CSV)", doublons_apercu.to_csv(index=False).encode("utf-8"),
@@ -754,7 +862,7 @@ with tab_qualite:
     st.write("")
     section_title("POSTES SANS NOUVELLE INSTALLATION DEPUIS PLUS DE 90 JOURS")
     if dormants_apercu.empty:
-        st.success("Tous les postes ont une installation récente (moins de 90 jours avant la dernière période connue).")
+        status_badge("Tous les postes ont une installation récente (moins de 90 jours)", "ok")
     else:
         st.caption("Seuil de 90 jours assumé par défaut (aucune valeur officielle communiquée) — peut indiquer un "
                    "poste à l'arrêt (équipement, connectivité) pendant que d'autres restent actifs.")
@@ -784,9 +892,9 @@ st.write("")
 with st.expander("📄 Rapport de synthèse (PDF)"):
     st.caption(
         "Génère un PDF compact (KPI globaux, top localités, objectifs vs réalisé par phase, répartition "
-        "régionale, alertes qualité) — pour un reporting institutionnel sans recomposer ces chiffres à la "
-        "main. Généré à la demande (pas à chaque interaction) : relance la génération après un changement "
-        "de données ou de filtre."
+        "régionale, sites en dépassement de capacité, alertes qualité) — pour un reporting institutionnel "
+        "sans recomposer ces chiffres à la main. Généré à la demande (pas à chaque interaction) : relance la "
+        "génération après un changement de données ou de filtre."
     )
     if st.button("🖨️ Générer le rapport PDF", key="cpt_gen_pdf"):
         with st.spinner("Génération du PDF…"):
@@ -829,6 +937,15 @@ with st.expander("📄 Rapport de synthèse (PDF)"):
                 })
             if not par_region.empty:
                 sections_pdf.append({"titre": "Repartition par region", "tableau": par_region})
+            if not df_saturation.empty and (df_saturation["statut"] == "critical").any():
+                tableau_pdf_saturation = df_saturation[df_saturation["statut"] == "critical"][
+                    ["nom", "puissance_kwc", "max_compteurs", "compteurs_installes"]
+                ].copy()
+                tableau_pdf_saturation.columns = ["Site", "Puissance (kWc)", "Capacite theorique", "Compteurs installes"]
+                sections_pdf.append({
+                    "titre": "Sites en depassement de capacite theorique (> 400W/compteur)",
+                    "tableau": tableau_pdf_saturation,
+                })
             sections_pdf.append({
                 "titre": "Alertes qualite des donnees",
                 "texte": (
@@ -849,6 +966,7 @@ with st.expander("📄 Rapport de synthèse (PDF)"):
                     ("Couverture referentiel",
                      f"{couverture['taux'] * 100:.0f}%" if couverture["taux"] is not None else "-"),
                     ("Derniere periode", derniere_periode.strftime("%m/%Y") if pd.notna(derniere_periode) else "-"),
+                    ("Sites en sursaturation", str(nb_sites_satures)),
                 ],
                 sections_pdf,
             )

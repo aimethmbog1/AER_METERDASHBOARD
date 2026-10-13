@@ -203,6 +203,16 @@ def build_from_holley_files(fichiers: list[dict]) -> pd.DataFrame:
 
 
 _CHEMIN_SITES_OFFICIELS = Path(__file__).resolve().parent.parent / "data" / "sites_officiels_aer.csv"
+_CHEMIN_PUISSANCES_SITES = Path(__file__).resolve().parent.parent / "data" / "puissances_sites_aer.csv"
+
+# Convention de dimensionnement assumée (communiquée par l'utilisateur, pas une
+# règle AER documentée trouvée dans les fichiers de cette application) : un
+# site ne peut théoriquement admettre, comme nombre de compteurs, que sa
+# puissance installée divisée par 400 W par compteur. Diviseur entier
+# (`//`) : un site ne peut pas admettre une fraction de compteur.
+WATTS_PAR_COMPTEUR = 400
+SEUIL_SATURATION_AVERTISSEMENT = 0.80
+SEUIL_SATURATION_CRITIQUE = 1.00
 
 
 @st.cache_data(show_spinner=False)
@@ -219,6 +229,64 @@ def load_official_sites() -> pd.DataFrame:
     if _CHEMIN_SITES_OFFICIELS.exists():
         return pd.read_csv(_CHEMIN_SITES_OFFICIELS)
     return pd.DataFrame(columns=["nom", "region", "departement", "antenne"])
+
+
+def load_puissances_sites() -> pd.DataFrame:
+    """Puissance installée (kWc) des 499 sites officiels du parc solaire AER
+    — même principe et même source que `load_official_sites()` : extraite
+    une fois pour toutes du classeur `Gestion_Parc_Solaire_AER2027_DASHBOARD.
+    xlsx` (feuille « Données sites », colonne « Puissance (kWc) ») et
+    embarquée ici comme référence statique. Cette application continue de
+    ne JAMAIS lire ce classeur à l'exécution — seul un instantané de deux de
+    ses colonnes (région/antenne, puissance) est embarqué dans `data/`.
+    Un site dont le nom apparaît deux fois dans le classeur source
+    (« Mbamti-Katarko », deux sites distincts partageant le même nom) ne
+    garde que sa première occurrence, exactement comme `sites_officiels_aer.
+    csv` — pas une correction propre à cette fonction."""
+    if not _CHEMIN_PUISSANCES_SITES.exists():
+        return pd.DataFrame(columns=["nom", "puissance_kwc", "max_compteurs"])
+    df = pd.read_csv(_CHEMIN_PUISSANCES_SITES)
+    df["max_compteurs"] = (df["puissance_kwc"] * 1000 // WATTS_PAR_COMPTEUR).astype(int)
+    return df
+
+
+def statut_saturation(taux: float | None) -> str:
+    """'neutral' si le taux est inconnu (site sans puissance de référence),
+    'critical' si le site dépasse sa capacité théorique (>= 100 %), 'warning'
+    au-delà de 80 %, 'ok' en dessous. Seuils calqués sur ceux déjà utilisés
+    pour les objectifs par phase (`target_status`) — mêmes paliers 80 %/100 %,
+    lecture inversée (ici, plus haut = plus près de la saturation)."""
+    if taux is None or pd.isna(taux):
+        return "neutral"
+    if taux >= SEUIL_SATURATION_CRITIQUE:
+        return "critical"
+    if taux >= SEUIL_SATURATION_AVERTISSEMENT:
+        return "warning"
+    return "ok"
+
+
+def saturation_par_site(df: pd.DataFrame, sites_ref: pd.DataFrame, puissances: pd.DataFrame) -> pd.DataFrame:
+    """Taux de saturation de chaque site officiel : compteurs installés
+    rapportés à sa capacité théorique (puissance ÷ 400 W/compteur). Un site
+    du référentiel sans aucun compteur installé reste dans le résultat avec
+    un taux de 0 % (jamais omis — c'est aussi une information utile). Une
+    localité installée qui ne correspond à aucun site officiel (sous-
+    localité, quartier) n'apparaît pas ici : elle n'a pas de puissance de
+    référence, donc pas de capacité théorique calculable — déjà signalée par
+    ailleurs (onglet « Par région », compteur « hors référentiel »)."""
+    if puissances.empty or sites_ref.empty or "localite" not in df.columns:
+        return pd.DataFrame()
+    installes = df["localite"].astype(str).str.strip().value_counts().rename("compteurs_installes")
+    base = puissances.merge(
+        sites_ref[["nom", "region", "antenne"]].drop_duplicates(subset="nom"), on="nom", how="left",
+    )
+    base = base.join(installes, on="nom")
+    base["compteurs_installes"] = base["compteurs_installes"].fillna(0).astype(int)
+    base["taux_saturation"] = base.apply(
+        lambda r: (r["compteurs_installes"] / r["max_compteurs"]) if r["max_compteurs"] > 0 else None, axis=1,
+    )
+    base["statut"] = base["taux_saturation"].apply(statut_saturation)
+    return base.sort_values("taux_saturation", ascending=False, na_position="last").reset_index(drop=True)
 
 
 def suggest_locality_groups(

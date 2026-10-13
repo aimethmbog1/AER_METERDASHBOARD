@@ -128,6 +128,27 @@ def inject_base_style():
         [data-testid="stMetricValue"] {{ font-size: 1.5rem; color: var(--ink-primary); font-variant-numeric: tabular-nums; }}
         [data-testid="stMetricLabel"] {{ font-weight: 600; letter-spacing: .02em; color: var(--ink-secondary); }}
 
+        /* st.info/warning/success/error natifs : sans ce bloc, Streamlit les
+           rend dans sa palette claire par défaut (fond pastel, texte sombre)
+           — une intrusion "mode clair" détonante sur fond sombre. On les
+           ramène au même panneau sombre que le reste de l'interface, avec
+           un simple liseré de couleur (même langage visuel que
+           `.aer-section-title`) plutôt qu'un fond coloré plein : ces
+           messages natifs restent un usage secondaire/explicatif dans
+           cette application — le vrai statut passe toujours par
+           `status_badge` ci-dessous. */
+        [data-testid="stAlertContainer"] {{
+            background: var(--bg-panel) !important; border: 1px solid var(--border) !important;
+            border-radius: 8px;
+        }}
+        [data-testid="stAlertContainer"] p, [data-testid="stAlertContainer"] [data-testid="stMarkdownContainer"] {{
+            color: var(--ink-primary) !important;
+        }}
+        [data-testid="stAlertContainer"]:has([data-testid="stAlertContentWarning"]) {{ border-left: 3px solid var(--status-warning); }}
+        [data-testid="stAlertContainer"]:has([data-testid="stAlertContentError"]) {{ border-left: 3px solid var(--status-critical); }}
+        [data-testid="stAlertContainer"]:has([data-testid="stAlertContentSuccess"]) {{ border-left: 3px solid var(--status-ok); }}
+        [data-testid="stAlertContainer"]:has([data-testid="stAlertContentInfo"]) {{ border-left: 3px solid var(--status-info); }}
+
         .aer-section-title {{
             background: var(--bg-panel); color: var(--ink-primary); font-weight: 700; font-size: .95rem;
             letter-spacing: .03em; padding: 0.55rem 0.9rem; border-radius: 6px; margin: 0.6rem 0 0.8rem 0;
@@ -182,6 +203,46 @@ def inject_base_style():
         }}
         .aer-pulse .aer-badge-dot {{ animation: aer-breathe 4.5s ease-in-out infinite; }}
         @media (prefers-reduced-motion: reduce) {{ .aer-pulse .aer-badge-dot {{ animation: none; }} }}
+
+        /* Barres de saturation (compteurs installés vs capacité théorique du
+           site). Échelle fixée à 150 % de la capacité — une barre pleine à
+           100 % masquerait qu'un site a dépassé sa capacité théorique — avec
+           un repère vertical fixe au palier des 100 %. Le dépassement
+           (« critical ») est le seul état qui respire ici : c'est la seule
+           anomalie réelle de cet indicateur (cf. néon réservé aux états). */
+        .aer-satbar-row {{
+            display: flex; align-items: center; gap: .6rem; padding: .32rem 0;
+        }}
+        .aer-satbar-label {{
+            flex: 0 0 38%; font-size: .82rem; color: var(--ink-secondary);
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }}
+        .aer-satbar-detail {{ color: var(--ink-muted); font-size: .74rem; }}
+        .aer-satbar-track {{
+            position: relative; flex: 1; height: 10px; background: var(--bg-panel);
+            border-radius: 5px; overflow: hidden; border: 1px solid var(--border);
+        }}
+        .aer-satbar-fill {{
+            position: absolute; left: 0; top: 0; height: 100%; border-radius: 5px;
+            transition: width .5s ease-out;
+        }}
+        .aer-satbar-ok {{ background: var(--status-ok); }}
+        .aer-satbar-warning {{ background: var(--status-warning); }}
+        .aer-satbar-critical {{ background: var(--status-critical); animation: aer-satbar-glow 2.2s ease-in-out infinite; }}
+        .aer-satbar-neutral {{ background: var(--ink-muted); }}
+        @keyframes aer-satbar-glow {{
+            0%, 100% {{ box-shadow: 0 0 5px var(--status-critical); }}
+            50% {{ box-shadow: 0 0 13px var(--status-critical); }}
+        }}
+        @media (prefers-reduced-motion: reduce) {{ .aer-satbar-critical {{ animation: none; box-shadow: 0 0 6px var(--status-critical); }} }}
+        .aer-satbar-mark {{
+            position: absolute; left: 66.667%; top: -2px; bottom: -2px; width: 2px;
+            background: rgba(255,255,255,.4); z-index: 1;
+        }}
+        .aer-satbar-value {{
+            flex: 0 0 52px; text-align: right; font-weight: 700; font-size: .82rem;
+            font-variant-numeric: tabular-nums;
+        }}
         </style>
         """,
         unsafe_allow_html=True,
@@ -213,6 +274,35 @@ def status_badge(label: str, status: str = "info", pulse: bool = False):
     `pulse=True` réservé aux états actifs/en cours (voir docstring module)."""
     classes = f"aer-badge aer-badge-{status}" + (" aer-pulse" if pulse else "")
     st.markdown(f'<span class="{classes}"><span class="aer-badge-dot"></span>{label}</span>', unsafe_allow_html=True)
+
+
+def saturation_bar(nom: str, taux: float | None, statut: str, detail: str = ""):
+    """Une ligne = un site : capacité installée (compteurs) vs capacité
+    théorique (puissance ÷ 400 W/compteur). Échelle fixe à 150 % de la
+    capacité (repère vertical à 100 %), pour que le dépassement reste
+    visible plutôt que de saturer la barre à l'identique d'un site pile à
+    l'objectif. Jamais la couleur seule : le pourcentage est toujours
+    affiché en toutes lettres à droite (WCAG 1.4.1)."""
+    if taux is None:
+        pct_affiche, largeur = "n/d", 0.0
+    else:
+        pct_affiche = f"{taux * 100:.0f} %"
+        largeur = min(taux / 1.5, 1.0) * 100
+    detail_html = f'<span class="aer-satbar-detail"> · {detail}</span>' if detail else ""
+    couleur = STATUS_COLORS.get(statut, STATUS_NEUTRAL)
+    st.markdown(
+        f"""
+        <div class="aer-satbar-row">
+          <div class="aer-satbar-label" title="{nom}">{nom}{detail_html}</div>
+          <div class="aer-satbar-track">
+            <div class="aer-satbar-mark"></div>
+            <div class="aer-satbar-fill aer-satbar-{statut}" style="width:{largeur:.1f}%;"></div>
+          </div>
+          <div class="aer-satbar-value" style="color:{couleur};">{pct_affiche}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def animated_counter(label: str, value: int, status: str = "info", key: str = "counter", height: int = 120):

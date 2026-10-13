@@ -32,6 +32,15 @@ avec un compromis assumé — *« néon réservé aux états »*.
   validée par la skill de data-visualisation (8 teintes, séparation
   daltonisme-compatible vérifiée), volontairement distincte des couleurs de
   statut.
+- **Barres de saturation** (onglet « ⚡ Saturation des sites ») : une ligne = un
+  site, échelle fixée à 150 % de la capacité théorique (repère vertical au palier
+  des 100 %) pour que le dépassement reste visible plutôt que de saturer la barre
+  à l'identique d'un site pile à l'objectif — seul le dépassement réel respire
+  (même logique que le badge « Installations actives »).
+- Les messages natifs Streamlit (`st.info`/`st.warning`/`st.success`/`st.error`)
+  sont ramenés au même panneau sombre que le reste de l'interface (liseré de
+  couleur plutôt que fond pastel clair) — un message natif reste un usage
+  secondaire/explicatif ici ; le vrai statut passe toujours par le badge dédié.
 
 ## Installation
 
@@ -79,9 +88,14 @@ une correction pour chaque localité détectée, en deux passes :
 1. **Rapprochement d'un site officiel AER** — `data/sites_officiels_aer.csv` embarque
    les 499 sites du parc solaire (nom, région, département, antenne), extraits du
    classeur `Gestion_Parc_Solaire_AER2027_DASHBOARD.xlsx` (feuille « Données sites »).
-   Une localité qui ressemble fortement à un de ces sites est corrigée vers son
-   orthographe officielle (ex. `DOUKOUR0Y` → `Doukouroy`, `DJIGBAMAFOUS` /
-   `NJIBAMAFOU` → `Njigbamafou`).
+   `data/puissances_sites_aer.csv` embarque, du même classeur et de la même feuille,
+   la puissance installée (kWc) de ces mêmes 499 sites — utilisée uniquement par
+   l'onglet « ⚡ Saturation des sites » ci-dessous. Dans les deux cas, c'est un
+   instantané statique de deux colonnes du classeur, pris une fois pour toutes :
+   cette application ne lit jamais ce classeur à l'exécution. Une localité qui
+   ressemble fortement à un de ces sites est corrigée vers son orthographe
+   officielle (ex. `DOUKOUR0Y` → `Doukouroy`, `DJIGBAMAFOUS` / `NJIBAMAFOU` →
+   `Njigbamafou`).
 2. **Regroupement interne** pour les localités restantes (coquilles, casse, espaces
    superflus, noms dupliqués) — comme avant, regroupées sous la variante la plus
    fréquente.
@@ -92,7 +106,7 @@ Beaucoup de localités des exports Holley ne correspondent à aucun site officie
 (sous-localités, quartiers) — c'est normal, elles passent simplement par le
 regroupement interne.
 
-## Les sept onglets
+## Les huit onglets
 
 - **📊 Vue d'ensemble** : indicateurs clés (compteurs installés, localités et postes
   couverts, dernière période, part de compteurs solaires), top 10 des localités,
@@ -125,7 +139,23 @@ regroupement interne.
   volontairement pas) : c'est un regroupement par région, pas une carte. Une
   localité sans correspondance dans le référentiel apparaît sous
   « (hors référentiel) ».
-- **🔍 Qualité des données** *(nouveau)* : anomalies à vérifier manuellement —
+- **⚡ Saturation des sites** *(nouveau)* : taux de saturation de chaque site officiel —
+  compteurs installés rapportés à sa **capacité théorique**, définie comme la
+  puissance du site (kWc) × 1 000 ÷ **400 W par compteur**, arrondie à l'entier
+  inférieur. Convention de dimensionnement communiquée par l'utilisateur, pas une
+  valeur officielle retrouvée dans les fichiers de l'application — à ajuster dans
+  `utils/compteurs.py` (`WATTS_PAR_COMPTEUR`) si une autre règle s'applique. Seuls les
+  sites du référentiel officiel apparaissent (puissance connue) ; une localité
+  installée hors référentiel reste signalée dans l'onglet « 🌍 Par région », jamais
+  ici avec une capacité devinée. Un site jamais encore équipé apparaît avec un taux de
+  0 % (jamais omis). Seuils (assumés, mêmes paliers que les objectifs par phase) :
+  vert en dessous de 80 % de la capacité, ambre de 80 % à 100 %, rouge au-delà —
+  un dépassement réel (compteurs installés > capacité théorique) est signalé
+  explicitement, avec le détail des sites concernés, pour vérification manuelle
+  (extension de puissance non répercutée ici, compteurs partagés avec un poste
+  voisin, ou dimensionnement initial sous-estimé — cette application ne tranche pas
+  laquelle).
+- **🔍 Qualité des données** : anomalies à vérifier manuellement —
   compteurs en doublon (même numéro dans plusieurs lignes, risque de double
   comptage), postes sans nouvelle installation depuis plus de 90 jours (seuil
   assumé par défaut), part de lignes sans localité ou poste lisible. Rien n'est
@@ -134,10 +164,11 @@ regroupement interne.
   juste sous le bandeau central, avant même d'ouvrir cet onglet.
 
 Un **taux de couverture des 499 localités officielles** (combien ont au moins un
-compteur installé) est affiché en continu sous le bandeau central. Un export
-complet (toutes les lignes, colonnes nettoyées, y compris la phase) et un
-**rapport de synthèse PDF** (KPI, top localités, objectifs vs réalisé, répartition
-régionale, alertes qualité — généré à la demande, pratique pour un reporting
+compteur installé) ainsi qu'un badge **sites en sursaturation** sont affichés en
+continu sous le bandeau central. Un export complet (toutes les lignes, colonnes
+nettoyées, y compris la phase) et un **rapport de synthèse PDF** (KPI, top
+localités, objectifs vs réalisé, répartition régionale, sites en dépassement de
+capacité, alertes qualité — généré à la demande, pratique pour un reporting
 institutionnel) sont disponibles en bas de page une fois de vrais fichiers déposés.
 Si la génération des images de graphiques échoue sur l'hébergement choisi (la
 librairie `kaleido` a besoin d'un Chrome headless, pas toujours disponible), le
