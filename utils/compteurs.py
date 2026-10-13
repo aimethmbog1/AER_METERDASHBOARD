@@ -104,6 +104,64 @@ def assign_phases(df: pd.DataFrame, phases: pd.DataFrame) -> pd.Series:
 
 
 # ---------------------------------------------------------------------------
+# Phase par préfixe du numéro de compteur — convention communiquée par
+# l'utilisateur (pas une règle officielle documentée dans les exports
+# Holley) : le numéro de compteur (`numero_compteur`, colonne « Old Consumer
+# No. ») commençant par « 251 » appartient à la Phase 1, par « 241 » à la
+# Phase 2, par « 5 » à la Phase 3. L'association se fait par ORDRE (1er
+# préfixe -> 1re ligne du tableau des phases, etc.), jamais par nom, pour
+# rester valable même si l'utilisateur renomme ses phases dans la barre
+# latérale. À ajuster ici si une autre convention s'applique.
+# ---------------------------------------------------------------------------
+PREFIXES_COMPTEUR_PHASE = [("251", 0), ("241", 1), ("5", 2)]
+
+
+def assign_phase_by_prefix(
+    df: pd.DataFrame, phases: pd.DataFrame,
+    prefixes: list[tuple[str, int]] = PREFIXES_COMPTEUR_PHASE,
+) -> pd.Series:
+    """Classe chaque ligne de `df` par préfixe de `numero_compteur`. Renvoie
+    None (valeur manquante) pour un numéro ne correspondant à aucun préfixe
+    connu, ou si la phase à l'index demandé n'est pas définie dans `phases`
+    — jamais une phase devinée. Les préfixes les plus longs sont testés en
+    premier, pour qu'un préfixe plus spécifique l'emporte en cas de
+    chevauchement (ex. un futur préfixe à 1 chiffre ne doit pas avaler un
+    préfixe à 3 chiffres qui commence par le même chiffre)."""
+    resultat = pd.Series([None] * len(df), index=df.index, dtype="object")
+    if "numero_compteur" not in df.columns or df.empty:
+        return resultat
+    noms_phases = phases["Phase"].tolist()
+    numeros = df["numero_compteur"].astype(str).str.strip()
+    non_classes = pd.Series(True, index=df.index)
+    for prefixe, idx in sorted(prefixes, key=lambda p: -len(p[0])):
+        if idx >= len(noms_phases) or pd.isna(noms_phases[idx]) or not str(noms_phases[idx]).strip():
+            continue
+        masque = non_classes & numeros.str.startswith(prefixe)
+        resultat[masque] = str(noms_phases[idx]).strip()
+        non_classes &= ~masque
+    return resultat
+
+
+def assign_phases_combined(
+    df: pd.DataFrame, phases: pd.DataFrame,
+    prefixes: list[tuple[str, int]] = PREFIXES_COMPTEUR_PHASE,
+) -> tuple[pd.Series, pd.Series]:
+    """Classement final par phase, en deux temps : le préfixe du numéro de
+    compteur décide quand il correspond à une convention connue (plus
+    fiable, basé sur un identifiant stable plutôt qu'une date parfois mal
+    renseignée) ; sinon on retombe sur le classement par plage de dates
+    (`assign_phases`). Renvoie `(phase_finale, desaccord)` où `desaccord`
+    est un masque booléen : True quand les deux méthodes désignent une
+    phase différente pour la même ligne — à vérifier manuellement, jamais
+    résolu silencieusement en faveur de l'une ou l'autre."""
+    phase_date = assign_phases(df, phases)
+    phase_prefixe = assign_phase_by_prefix(df, phases, prefixes)
+    phase_finale = phase_prefixe.where(phase_prefixe.notna(), phase_date)
+    desaccord = phase_prefixe.notna() & phase_date.notna() & (phase_prefixe != phase_date)
+    return phase_finale, desaccord
+
+
+# ---------------------------------------------------------------------------
 # Format Holley (format réel des fichiers fournis par l'AER)
 # ---------------------------------------------------------------------------
 COLONNES_HOLLEY_ATTENDUES = {"Full Address", "Template Code"}

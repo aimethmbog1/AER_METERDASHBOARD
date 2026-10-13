@@ -126,17 +126,32 @@ Beaucoup de localités des exports Holley ne correspondent à aucun site officie
 (sous-localités, quartiers) — c'est normal, elles passent simplement par le
 regroupement interne.
 
+## Filtre global
+
+Un panneau de filtres (« 🔎 Filtres »), juste sous l'expander d'introduction, en
+haut de page : **localité, poste, région, phase, type de compteur, plage de
+dates**. Il s'applique à **toute l'application** (bandeau central, les huit
+sections, l'export CSV et le rapport PDF) dès qu'une valeur est choisie — pas
+seulement à la section affichée. Remplace les filtres qui n'existaient
+auparavant que dans certaines sections (l'ancien filtre par poste de « Par
+localité », l'ancienne plage de dates de « Par période »), pour n'avoir qu'un
+seul endroit où filtrer. Le nombre de compteurs affichés par rapport au total
+chargé est indiqué dès qu'un filtre réduit les données ; un bouton réinitialise
+tous les filtres d'un coup.
+
 ## Les huit sections (barre de navigation latérale)
 
 - **📊 Vue d'ensemble** : indicateurs clés (compteurs installés, localités et postes
   couverts, dernière période, part de compteurs solaires), top 10 des localités,
-  rythme d'installation récent, et traçabilité par lot (un fichier déposé = un lot).
+  jauge de couverture du référentiel officiel, rythme d'installation récent, et
+  traçabilité par lot (un fichier déposé = un lot).
 - **📍 Par localité** : classement des localités par nombre de compteurs installés,
-  filtre par poste, répartition par type de compteur (réseau / solaire), tableau
-  exportable.
+  répartition par type de compteur (réseau / solaire), tableau exportable (filtre
+  par poste désormais dans le panneau de filtres global, en haut de page).
 - **📅 Par période** : nouvelles installations et cumul dans le temps, avec un choix
-  de granularité (mois / trimestre / année), un filtre de plage de dates, et la
-  **variation vs la période précédente** (delta natif Streamlit).
+  de granularité (mois / trimestre / année) et la **variation vs la période
+  précédente** (delta natif Streamlit) — la plage de dates se règle dans le panneau
+  de filtres global, en haut de page.
 - **🧭 Localité × période** : carte de chaleur et tableau croisé, avec un choix entre
   le Top 12 des localités les plus équipées et la totalité des localités, pour
   repérer où et quand l'effort d'installation s'est concentré.
@@ -145,12 +160,20 @@ regroupement interne.
   chiffrée n'existe dans les exports Holley, à saisir manuellement ; statut vert/
   ambre/rouge à 100 % / 80 % / en dessous de l'objectif, seuils assumés par défaut),
   évolution dans le temps (graphe empilé et cumul) et tableau croisé phase × période.
-  Aucune colonne « phase » n'existe dans les exports Holley : les phases sont
-  définies par des plages de dates **éditables dans la barre latérale**
-  (« 🏗️ Phases du projet »), pré-remplies en 3 tiers égaux à corriger avec les
-  vraies dates de chaque phase. Un compteur dont la période ne tombe dans aucune
-  plage définie est compté à part, sous « (hors phase) », jamais rattaché
-  silencieusement à une phase voisine.
+  Aucune colonne « phase » n'existe dans les exports Holley : deux méthodes de
+  classement, dans cet ordre de priorité — (1) le **préfixe du numéro de compteur**
+  (`numero_compteur`, colonne « Old Consumer No. ») : **251** → 1re phase définie
+  ci-dessous, **241** → 2e phase, **5** → 3e phase (association par ordre des lignes,
+  pas par nom ; convention communiquée par l'utilisateur, pas une règle officielle
+  documentée — à ajuster dans `utils/compteurs.py`, `PREFIXES_COMPTEUR_PHASE`, si une
+  autre convention s'applique) ; (2) à défaut, pour un numéro ne correspondant à
+  aucun de ces préfixes, la **plage de dates** définie et modifiable dans la barre
+  latérale (« 🏗️ Phases du projet »), pré-remplie en 3 tiers égaux à corriger avec
+  les vraies dates de chaque phase. Un compteur classé par aucune des deux méthodes
+  est compté à part, sous « (hors phase) », jamais rattaché silencieusement à une
+  phase voisine. Les cas où les deux méthodes se contredisent (préfixe connu, mais
+  date hors de la plage de la phase correspondante) sont comptés et détaillés dans
+  l'onglet « 🔍 Qualité des données », jamais résolus en silence.
 - **🌍 Par région** *(nouveau — pas une carte géographique)* : répartition des
   compteurs par région et par antenne, à partir du rattachement **exact** entre la
   localité (déjà corrigée) et le référentiel des 499 sites officiels. `data/
@@ -178,10 +201,12 @@ regroupement interne.
 - **🔍 Qualité des données** : anomalies à vérifier manuellement —
   compteurs en doublon (même numéro dans plusieurs lignes, risque de double
   comptage), postes sans nouvelle installation depuis plus de 90 jours (seuil
-  assumé par défaut), part de lignes sans localité ou poste lisible. Rien n'est
-  corrigé ni retiré automatiquement des statistiques des autres onglets — ces
-  deux indicateurs (doublons, postes inactifs) sont aussi résumés en continu
-  juste sous le bandeau central, avant même d'ouvrir cet onglet.
+  assumé par défaut), **désaccords entre le préfixe du numéro de compteur et la
+  plage de dates de la phase** (tableau détaillé, les deux classements côte à
+  côte), part de lignes sans localité ou poste lisible. Rien n'est corrigé ni
+  retiré automatiquement des statistiques des autres onglets — ces indicateurs
+  (doublons, postes inactifs) sont aussi résumés en continu juste sous le
+  bandeau central, avant même d'ouvrir cet onglet.
 
 Un **taux de couverture des 499 localités officielles** (combien ont au moins un
 compteur installé) ainsi qu'un badge **sites en sursaturation** sont affichés en

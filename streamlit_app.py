@@ -15,7 +15,7 @@ from utils.compteurs import (
     read_excel_sheet_names, load_excel,
     est_format_holley, parse_date_from_filename, build_from_holley_files,
     apply_column_mapping, locality_cleanup_ui, lot_summary, load_official_sites,
-    default_phases, assign_phases, default_targets, target_status,
+    default_phases, assign_phases, assign_phases_combined, default_targets, target_status,
     coverage_stats, regional_breakdown, detect_duplicates, detect_dormant_postes,
     data_quality_summary, build_pdf_report,
     load_puissances_sites, saturation_par_site, WATTS_PAR_COMPTEUR,
@@ -194,7 +194,14 @@ with st.sidebar.expander("Définir les phases (dates éditables)", expanded=Fals
         key="cpt_phases_editor",
     )
     st.session_state["cpt_phases_df"] = phases_editees
-df["phase"] = assign_phases(df, phases_editees)
+    st.caption(
+        "Convention communiquée par l'utilisateur, prioritaire sur les dates ci-dessus : un numéro de "
+        "compteur commençant par **251** → Phase 1, **241** → Phase 2, **5** → Phase 3 (ordre des lignes "
+        "ci-dessus, pas leur nom). Les plages de dates ne servent plus que pour les numéros ne correspondant "
+        "à aucun de ces préfixes — à ajuster dans `utils/compteurs.py` (`PREFIXES_COMPTEUR_PHASE`) si une "
+        "autre convention s'applique."
+    )
+df["phase"], phase_desaccord = assign_phases_combined(df, phases_editees)
 
 # =============================================================================
 # Barre latérale — objectifs par phase (aucune cible chiffrée n'existe dans
@@ -230,6 +237,88 @@ with st.sidebar.expander("Définir les objectifs (cibles éditables)", expanded=
 
 sites_ref = load_official_sites()
 puissances_ref = load_puissances_sites()
+
+# =============================================================================
+# Filtre global — s'applique à TOUTE l'application (bandeau central,
+# graphiques, tableaux, export, rapport PDF), pas seulement à la section
+# affichée dans la barre latérale. Remplace les filtres qui n'existaient
+# jusqu'ici que dans certaines sections (ex. l'ancien filtre par poste de
+# « Par localité », l'ancienne plage de dates de « Par période ») pour
+# n'avoir qu'un seul endroit où filtrer les données.
+# =============================================================================
+df_avant_filtre = df
+df_region_avant_filtre = regional_breakdown(df_avant_filtre, sites_ref) if not sites_ref.empty else pd.DataFrame()
+
+with st.container(border=True):
+    section_title("🔎 FILTRES — S'APPLIQUENT À TOUTE L'APPLICATION")
+    fc1, fc2, fc3, fc4 = st.columns(4)
+    with fc1:
+        filtre_localites = st.multiselect(
+            "Localité", sorted(df_avant_filtre["localite"].dropna().unique().tolist()),
+            default=[], key="flt_localite",
+        )
+    with fc2:
+        options_postes = sorted(df_avant_filtre["poste"].dropna().unique().tolist()) if "poste" in df_avant_filtre else []
+        filtre_postes = st.multiselect("Poste", options_postes, default=[], key="flt_poste", disabled=not options_postes)
+    with fc3:
+        options_regions = (sorted(df_region_avant_filtre["region"].dropna().unique().tolist())
+                            if not df_region_avant_filtre.empty else [])
+        filtre_regions = st.multiselect("Région", options_regions, default=[], key="flt_region",
+                                         disabled=not options_regions)
+    with fc4:
+        options_phases = sorted(df_avant_filtre["phase"].dropna().unique().tolist())
+        filtre_phases = st.multiselect("Phase", options_phases, default=[], key="flt_phase")
+
+    fc5, fc6, fc7 = st.columns([1, 1, 1])
+    with fc5:
+        options_types = (sorted(df_avant_filtre["type_compteur"].dropna().unique().tolist())
+                          if "type_compteur" in df_avant_filtre else [])
+        filtre_types = st.multiselect("Type de compteur", options_types, default=[], key="flt_type",
+                                       disabled=not options_types)
+    with fc6:
+        date_min_f, date_max_f = df_avant_filtre["periode"].min().date(), df_avant_filtre["periode"].max().date()
+        if date_min_f == date_max_f:
+            st.caption(f"Période disponible : {date_min_f.strftime('%m/%Y')} (un seul lot chargé)")
+            plage_dates_filtre = (date_min_f, date_max_f)
+        else:
+            plage_dates_filtre = st.date_input(
+                "Période d'installation", value=(date_min_f, date_max_f),
+                min_value=date_min_f, max_value=date_max_f, key="flt_dates",
+            )
+    with fc7:
+        st.write("")
+        if st.button("↺ Réinitialiser les filtres", key="flt_reset", use_container_width=True):
+            for cle in ["flt_localite", "flt_poste", "flt_region", "flt_phase", "flt_type", "flt_dates"]:
+                st.session_state.pop(cle, None)
+            st.rerun()
+
+    masque_filtre = pd.Series(True, index=df_avant_filtre.index)
+    if filtre_localites:
+        masque_filtre &= df_avant_filtre["localite"].isin(filtre_localites)
+    if filtre_postes and "poste" in df_avant_filtre:
+        masque_filtre &= df_avant_filtre["poste"].isin(filtre_postes)
+    if filtre_regions and not df_region_avant_filtre.empty:
+        masque_filtre &= df_region_avant_filtre["region"].isin(filtre_regions)
+    if filtre_phases:
+        masque_filtre &= df_avant_filtre["phase"].isin(filtre_phases)
+    if filtre_types and "type_compteur" in df_avant_filtre:
+        masque_filtre &= df_avant_filtre["type_compteur"].isin(filtre_types)
+    if isinstance(plage_dates_filtre, tuple) and len(plage_dates_filtre) == 2:
+        debut_f, fin_f = plage_dates_filtre
+        masque_filtre &= ((df_avant_filtre["periode"].dt.date >= debut_f) &
+                           (df_avant_filtre["periode"].dt.date <= fin_f))
+
+    df = df_avant_filtre[masque_filtre].copy()
+    phase_desaccord = phase_desaccord[masque_filtre]
+    if len(df) < len(df_avant_filtre):
+        st.caption(
+            f"Filtres actifs : {len(df):,} / {len(df_avant_filtre):,} compteurs affichés dans toute "
+            "l'application.".replace(",", " ")
+        )
+    if df.empty:
+        st.warning("Aucun compteur ne correspond à ces filtres — élargis-les ou réinitialise-les ci-dessus.")
+        st.stop()
+
 df_saturation = saturation_par_site(df, sites_ref, puissances_ref)
 
 # =============================================================================
@@ -298,6 +387,13 @@ couverture = coverage_stats(df, sites_ref)
 doublons_apercu = detect_duplicates(df)
 dormants_apercu = detect_dormant_postes(df)
 qualite = data_quality_summary(df)
+
+nb_phase_desaccord = int(phase_desaccord.sum())
+colonnes_desaccord = [c for c in ["numero_compteur", "localite", "poste", "periode"] if c in df.columns]
+desaccord_apercu = df.loc[phase_desaccord, colonnes_desaccord + ["phase"]].copy()
+if not desaccord_apercu.empty:
+    desaccord_apercu["phase (date)"] = assign_phases(df.loc[phase_desaccord], phases_editees)
+    desaccord_apercu = desaccord_apercu.rename(columns={"phase": "phase (préfixe)"})
 
 nb_sites_satures = int((df_saturation["statut"] == "critical").sum()) if not df_saturation.empty else 0
 
@@ -431,13 +527,7 @@ if nav_actif == "vue":
 # Par localité
 # -----------------------------------------------------------------------
 if nav_actif == "localite":
-    df_loc = df
-    if "poste" in df_loc and df_loc["poste"].nunique() > 1:
-        postes = sorted(df_loc["poste"].dropna().unique().tolist())
-        cle_filtre = "cpt_poste_filter_" + str(abs(hash(tuple(postes))))
-        choix_postes = st.multiselect("Filtrer par poste", postes, default=postes, key=cle_filtre)
-        df_loc = df_loc[df_loc["poste"].isin(choix_postes)]
-
+    df_loc = df  # déjà filtré par le panneau de filtres global, en haut de page
     if df_loc.empty:
         st.warning("Aucune localité ne correspond au filtre choisi.")
     else:
@@ -515,20 +605,16 @@ if nav_actif == "localite":
 # -----------------------------------------------------------------------
 if nav_actif == "periode":
     date_min, date_max = df["periode"].min().date(), df["periode"].max().date()
-    c1, c2 = st.columns([2, 1])
-    with c1:
-        if date_min == date_max:
-            st.markdown(f"**Période disponible :** {date_min.strftime('%m/%Y')} (un seul lot chargé)")
-            debut, fin = date_min, date_max
-        else:
-            plage = st.date_input("Période à afficher", value=(date_min, date_max),
-                                   min_value=date_min, max_value=date_max, key="cpt_plage")
-            debut, fin = plage if isinstance(plage, tuple) and len(plage) == 2 else (date_min, date_max)
-    with c2:
-        granularite = st.radio("Granularité", ["Mois", "Trimestre", "Année"], horizontal=True, index=0, key="cpt_gran")
+    if date_min == date_max:
+        st.caption(f"Période disponible : {date_min.strftime('%m/%Y')} (un seul lot chargé)")
+    else:
+        st.caption(
+            f"Période couverte par les filtres actifs : {date_min.strftime('%m/%Y')} → {date_max.strftime('%m/%Y')} "
+            "— ajuste la plage de dates dans le panneau de filtres en haut de page si besoin."
+        )
+    granularite = st.radio("Granularité", ["Mois", "Trimestre", "Année"], horizontal=True, index=0, key="cpt_gran")
 
-    masque = (df["periode"].dt.date >= debut) & (df["periode"].dt.date <= fin)
-    periode_df = df[masque]
+    periode_df = df  # déjà filtré par le panneau de filtres global, en haut de page
 
     if periode_df.empty:
         st.warning("Aucune installation sur la période choisie.")
@@ -645,10 +731,16 @@ if nav_actif == "phase":
                 "définies — ajuste les dates de début/fin dans la barre latérale si besoin."
             )
         st.caption(
-            "Les plages de dates de chaque phase sont définies et modifiables dans la barre latérale "
-            "(« 🏗️ Phases du projet ») — aucune colonne « phase » n'existe dans les exports Holley, ce "
-            "classement est donc entièrement basé sur la période d'installation de chaque compteur."
+            "Classement prioritaire : numéro de compteur commençant par **251** → 1re phase ci-dessus, "
+            "**241** → 2e phase, **5** → 3e phase (convention communiquée par l'utilisateur). Les plages de "
+            "dates, définies et modifiables dans la barre latérale (« 🏗️ Phases du projet »), ne servent plus "
+            "que pour les numéros ne correspondant à aucun de ces préfixes."
         )
+        if nb_phase_desaccord:
+            st.warning(
+                f"{nb_phase_desaccord} compteur(s) ont un préfixe et une plage de dates qui se contredisent — "
+                "détail dans l'onglet « 🔍 Qualité des données »."
+            )
 
         par_phase = df["phase"].value_counts().reindex(ordre_phases).fillna(0).astype(int)
         classees = par_phase.drop("(hors phase)", errors="ignore")
@@ -907,9 +999,30 @@ if nav_actif == "qualite":
     kpi_card_row([
         ("🔁", "Compteurs en doublon", str(len(doublons_apercu))),
         ("💤", "Postes inactifs (> 90 j)", str(len(dormants_apercu))),
+        ("⚖️", "Désaccords phase (préfixe vs date)", str(nb_phase_desaccord)),
         ("❓", "Localités non renseignées", f"{qualite.get('taux_localites_non_renseignees', 0) * 100:.1f} %"),
         ("❓", "Postes non renseignés", f"{qualite.get('taux_postes_non_renseignes', 0) * 100:.1f} %"),
     ])
+
+    st.write("")
+    section_title("DÉSACCORDS ENTRE LE PRÉFIXE DU COMPTEUR ET LA PLAGE DE DATES DE LA PHASE")
+    st.caption(
+        "Le préfixe du numéro de compteur (251/241/5) décide la phase affichée partout dans l'application — "
+        "ces lignes sont celles où la plage de dates définie dans la barre latérale aurait classé le compteur "
+        "dans une AUTRE phase. Peut signaler un compteur posé en stock avant sa phase officielle, une plage de "
+        "dates à corriger, ou une erreur de saisie — à vérifier manuellement, jamais résolu automatiquement."
+    )
+    if desaccord_apercu.empty:
+        status_badge("Aucun désaccord entre les deux méthodes de classement par phase", "ok")
+    else:
+        status_badge(f"{nb_phase_desaccord} compteur(s) classé(s) différemment selon la méthode", "warning")
+        st.dataframe(
+            desaccord_apercu, use_container_width=True, hide_index=True,
+            height=min(360, 38 * (len(desaccord_apercu) + 1)),
+            column_config={"periode": st.column_config.DateColumn("Période", format="MM/YYYY")},
+        )
+        st.download_button("⬇️ Télécharger ces lignes (CSV)", desaccord_apercu.to_csv(index=False).encode("utf-8"),
+                            "compteurs_desaccord_phase.csv", "text/csv", key="cpt_dl_desaccord_phase")
 
     st.write("")
     section_title("COMPTEURS EN DOUBLON (MÊME NUMÉRO DANS PLUSIEURS LIGNES)")
@@ -1016,8 +1129,10 @@ with st.expander("📄 Rapport de synthèse (PDF)"):
                 "texte": (
                     f"{len(doublons_apercu)} compteur(s) en doublon detecte(s). "
                     f"{len(dormants_apercu)} poste(s) sans nouvelle installation depuis plus de 90 jours. "
-                    f"{qualite.get('taux_localites_non_renseignees', 0) * 100:.1f}% des lignes sans localite "
-                    f"lisible, {qualite.get('taux_postes_non_renseignes', 0) * 100:.1f}% sans poste lisible."
+                    f"{nb_phase_desaccord} desaccord(s) entre le prefixe du numero de compteur et la plage de "
+                    f"dates de la phase. {qualite.get('taux_localites_non_renseignees', 0) * 100:.1f}% des lignes "
+                    f"sans localite lisible, {qualite.get('taux_postes_non_renseignes', 0) * 100:.1f}% sans poste "
+                    "lisible."
                 ),
             })
 
