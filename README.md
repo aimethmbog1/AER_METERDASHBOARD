@@ -41,6 +41,26 @@ avec un compromis assumé — *« néon réservé aux états »*.
   sont ramenés au même panneau sombre que le reste de l'interface (liseré de
   couleur plutôt que fond pastel clair) — un message natif reste un usage
   secondaire/explicatif ici ; le vrai statut passe toujours par le badge dédié.
+- **Navigation par barre latérale** (et non plus par onglets en haut de page) :
+  les huit sections apparaissent comme un menu de navigation dans la barre de
+  gauche, avec surlignage de la section active — inspiré des tableaux de bord
+  d'administration fournis en référence par l'utilisateur.
+- **Cartes KPI colorées** : chaque indicateur clé (hors bandeau central, qui
+  reste neutre) est présenté dans une carte avec un liseré de couleur
+  d'identité — tirée de la **même palette catégorielle validée** que les
+  graphiques multi-séries (8 teintes, jamais les couleurs de statut
+  émeraude/ambre/rouge) : de la variété visuelle sans rouvrir le compromis
+  « néon réservé aux états » déjà retenu pour cette application. Les
+  indicateurs qui portent une variation réelle (ex. « Par période ») restent
+  en revanche affichés en métriques natives Streamlit, pour garder la flèche
+  de tendance colorée — une carte KPI ne la montre pas.
+- **Graphiques et listes encadrés** dans des cartes à bordure, pour un effet
+  de grille de widgets plus proche des tableaux de bord de référence.
+- **Jauge (gauge)** dans « Vue d'ensemble » pour le taux de couverture du
+  référentiel officiel — seul indicateur de l'application à la fois réel et
+  naturellement adapté à ce type de widget ; les éléments décoratifs mais non
+  représentatifs des maquettes de référence (carte du monde, graphique radar
+  sans axes naturels dans ces données) n'ont volontairement pas été repris.
 
 ## Installation
 
@@ -106,7 +126,7 @@ Beaucoup de localités des exports Holley ne correspondent à aucun site officie
 (sous-localités, quartiers) — c'est normal, elles passent simplement par le
 regroupement interne.
 
-## Les huit onglets
+## Les huit sections (barre de navigation latérale)
 
 - **📊 Vue d'ensemble** : indicateurs clés (compteurs installés, localités et postes
   couverts, dernière période, part de compteurs solaires), top 10 des localités,

@@ -9,6 +9,7 @@ from utils.theme import (
     PAGE_ICON, APP_TITLE, NAVY, BLUE, GOLD, GREY, CATEGORICAL, BG_SURFACE,
     inject_base_style, section_title, kpi_row, mini_metric, status_badge,
     animated_counter, flow_diagram, saturation_bar, plotly_base_layout, render_sidebar_footer,
+    kpi_card_row, gauge_chart,
 )
 from utils.compteurs import (
     read_excel_sheet_names, load_excel,
@@ -54,6 +55,29 @@ ressources humaines) pour une cohérence visuelle entre les outils AER, mais lit
 façon totalement indépendante de ce tableau de bord.
         """
     )
+
+# =============================================================================
+# Barre latérale — navigation
+# =============================================================================
+NAV_SECTIONS = [
+    ("vue", "📊", "Vue d'ensemble"),
+    ("localite", "📍", "Par localité"),
+    ("periode", "📅", "Par période"),
+    ("croisement", "🧭", "Localité × période"),
+    ("phase", "🏗️", "Par phase"),
+    ("region", "🌍", "Par région"),
+    ("saturation", "⚡", "Saturation des sites"),
+    ("qualite", "🔍", "Qualité des données"),
+]
+LIBELLES_NAV = [f"{icone}  {libelle}" for _, icone, libelle in NAV_SECTIONS]
+CLE_PAR_LIBELLE = {f"{icone}  {libelle}": cle for cle, icone, libelle in NAV_SECTIONS}
+
+st.sidebar.markdown('<div class="aer-nav-brand">🔌 Statistiques compteurs</div>', unsafe_allow_html=True)
+libelle_choisi = st.sidebar.radio(
+    "Navigation", LIBELLES_NAV, label_visibility="collapsed", key="cpt_nav_radio",
+)
+nav_actif = CLE_PAR_LIBELLE[libelle_choisi]
+st.sidebar.markdown("---")
 
 # =============================================================================
 # Barre latérale — dépôt des fichiers
@@ -273,6 +297,7 @@ if nb_postes:
 couverture = coverage_stats(df, sites_ref)
 doublons_apercu = detect_duplicates(df)
 dormants_apercu = detect_dormant_postes(df)
+qualite = data_quality_summary(df)
 
 nb_sites_satures = int((df_saturation["statut"] == "critical").sum()) if not df_saturation.empty else 0
 
@@ -311,39 +336,86 @@ st.caption("Détail et méthode dans les onglets « ⚡ Saturation des sites » 
 
 st.write("")
 
-tab_vue, tab_localite, tab_periode, tab_croisement, tab_phase, tab_region, tab_saturation, tab_qualite = st.tabs([
-    "📊 Vue d'ensemble", "📍 Par localité", "📅 Par période", "🧭 Localité × période", "🏗️ Par phase",
-    "🌍 Par région", "⚡ Saturation des sites", "🔍 Qualité des données",
-])
+# La navigation se fait désormais par la barre latérale (nav_actif, ci-dessus) plutôt que
+# par des onglets en haut de page — chaque section ci-dessous ne s'affiche que si elle est active.
 
-# Valeurs par défaut (utilisées par le rapport PDF plus bas) : certains
-# blocs ci-dessous ne s'exécutent que si l'utilisateur a défini des phases —
-# sans ça, ces variables n'existeraient jamais.
-objectifs_definis = pd.DataFrame()
-fusion_obj = pd.DataFrame()
-df_par_phase = pd.DataFrame(columns=["Phase", "Compteurs installés"])
-par_region = pd.DataFrame(columns=["Région", "Compteurs installés"])
-ordre_phases = []
+# Données communes à plusieurs sections ET au rapport PDF plus bas — toujours
+# calculées ici, indépendamment de la section actuellement affichée dans la
+# barre latérale, pour que le PDF reflète toujours les vraies données plutôt
+# qu'une valeur par défaut parce qu'une autre section était ouverte au moment
+# de la génération (avec la navigation par onglets d'avant, tout s'exécutait
+# à chaque rafraîchissement ; avec la barre latérale, seule la section active
+# s'exécute, donc ce qui est partagé doit être calculé ici, une fois pour toutes).
+noms_phases = [str(p).strip() for p in phases_editees["Phase"].tolist() if pd.notna(p) and str(p).strip()]
+n_hors_phase = int((df["phase"] == "(hors phase)").sum())
+ordre_phases = noms_phases + (["(hors phase)"] if n_hors_phase else [])
+if noms_phases:
+    par_phase = df["phase"].value_counts().reindex(ordre_phases).fillna(0).astype(int)
+    df_par_phase = par_phase.reset_index()
+    df_par_phase.columns = ["Phase", "Compteurs installés"]
+else:
+    df_par_phase = pd.DataFrame(columns=["Phase", "Compteurs installés"])
+
+objectifs_definis = targets_editees[targets_editees["Objectif (compteurs)"] > 0]
+if not objectifs_definis.empty:
+    fusion_obj = targets_editees.merge(df_par_phase, on="Phase", how="left")
+    fusion_obj["Compteurs installés"] = fusion_obj["Compteurs installés"].fillna(0).astype(int)
+else:
+    fusion_obj = pd.DataFrame()
+
+if not sites_ref.empty:
+    df_region = regional_breakdown(df, sites_ref)
+    par_region = df_region["region"].value_counts().reset_index()
+    par_region.columns = ["Région", "Compteurs installés"]
+else:
+    df_region = pd.DataFrame()
+    par_region = pd.DataFrame(columns=["Région", "Compteurs installés"])
 
 # -----------------------------------------------------------------------
 # Vue d'ensemble
 # -----------------------------------------------------------------------
-with tab_vue:
-    section_title("TOP 10 DES LOCALITÉS")
-    top10 = df["localite"].value_counts().head(10).reset_index()
-    top10.columns = ["Localité", "Compteurs installés"]
-    fig = px.bar(top10.sort_values("Compteurs installés"), x="Compteurs installés", y="Localité",
-                 orientation="h", color_discrete_sequence=[NAVY])
-    fig = plotly_base_layout(fig, height=360, legend=False)
-    st.plotly_chart(fig, use_container_width=True)
+if nav_actif == "vue":
+    with st.container(border=True):
+        section_title("TOP 10 DES LOCALITÉS")
+        top10 = df["localite"].value_counts().head(10).reset_index()
+        top10.columns = ["Localité", "Compteurs installés"]
+        fig = px.bar(top10.sort_values("Compteurs installés"), x="Compteurs installés", y="Localité",
+                     orientation="h", color_discrete_sequence=[NAVY])
+        fig = plotly_base_layout(fig, height=360, legend=False)
+        st.plotly_chart(fig, use_container_width=True)
 
-    section_title("RYTHME D'INSTALLATION — PÉRIODES LES PLUS RÉCENTES")
-    par_periode_apercu = df.groupby("periode").size().reset_index(name="Installations")
-    par_periode_apercu = par_periode_apercu.sort_values("periode").tail(12)
-    fig2 = px.bar(par_periode_apercu, x="periode", y="Installations", color_discrete_sequence=[BLUE])
-    fig2 = plotly_base_layout(fig2, height=300, legend=False)
-    fig2.update_xaxes(title=None)
-    st.plotly_chart(fig2, use_container_width=True)
+    st.write("")
+
+    if couverture["taux"] is not None:
+        col_jauge, col_rythme = st.columns([1, 2])
+        with col_jauge:
+            with st.container(border=True):
+                section_title("COUVERTURE DU RÉFÉRENTIEL OFFICIEL")
+                st.plotly_chart(
+                    gauge_chart(couverture["taux"] * 100, "% des 499 sites officiels couverts", key="gauge_couverture"),
+                    use_container_width=True,
+                )
+                st.caption(f"{couverture['couvertes']} / {couverture['total']} sites ont au moins un compteur installé.")
+        with col_rythme:
+            with st.container(border=True):
+                section_title("RYTHME D'INSTALLATION — PÉRIODES LES PLUS RÉCENTES")
+                par_periode_apercu = df.groupby("periode").size().reset_index(name="Installations")
+                par_periode_apercu = par_periode_apercu.sort_values("periode").tail(12)
+                fig2 = px.bar(par_periode_apercu, x="periode", y="Installations", color_discrete_sequence=[BLUE])
+                fig2 = plotly_base_layout(fig2, height=300, legend=False)
+                fig2.update_xaxes(title=None)
+                st.plotly_chart(fig2, use_container_width=True)
+        st.write("")
+    else:
+        with st.container(border=True):
+            section_title("RYTHME D'INSTALLATION — PÉRIODES LES PLUS RÉCENTES")
+            par_periode_apercu = df.groupby("periode").size().reset_index(name="Installations")
+            par_periode_apercu = par_periode_apercu.sort_values("periode").tail(12)
+            fig2 = px.bar(par_periode_apercu, x="periode", y="Installations", color_discrete_sequence=[BLUE])
+            fig2 = plotly_base_layout(fig2, height=300, legend=False)
+            fig2.update_xaxes(title=None)
+            st.plotly_chart(fig2, use_container_width=True)
+        st.write("")
 
     if "nom_fichier" in df.columns and df["nom_fichier"].nunique() > 0:
         section_title("TRAÇABILITÉ PAR LOT — UN FICHIER DÉPOSÉ = UN LOT D'ABONNÉS")
@@ -358,7 +430,7 @@ with tab_vue:
 # -----------------------------------------------------------------------
 # Par localité
 # -----------------------------------------------------------------------
-with tab_localite:
+if nav_actif == "localite":
     df_loc = df
     if "poste" in df_loc and df_loc["poste"].nunique() > 1:
         postes = sorted(df_loc["poste"].dropna().unique().tolist())
@@ -373,11 +445,11 @@ with tab_localite:
         par_loc.columns = ["Localité", "Compteurs installés"]
         localite_top = par_loc.iloc[0]
 
-        kpi_row([
-            ("📍 Localités couvertes", str(df_loc["localite"].nunique()), None),
-            ("🥇 Localité la plus équipée", localite_top["Localité"], None),
-            (f"🔌 Compteurs à {localite_top['Localité']}", str(int(localite_top["Compteurs installés"])), None),
-            ("📊 Compteurs / localité (moy.)", f"{len(df_loc) / df_loc['localite'].nunique():.0f}", None),
+        kpi_card_row([
+            ("📍", "Localités couvertes", str(df_loc["localite"].nunique())),
+            ("🥇", "Localité la plus équipée", localite_top["Localité"]),
+            ("🔌", f"Compteurs à {localite_top['Localité']}", str(int(localite_top["Compteurs installés"]))),
+            ("📊", "Compteurs / localité (moy.)", f"{len(df_loc) / df_loc['localite'].nunique():.0f}"),
         ])
 
         st.write("")
@@ -441,7 +513,7 @@ with tab_localite:
 # -----------------------------------------------------------------------
 # Par période
 # -----------------------------------------------------------------------
-with tab_periode:
+if nav_actif == "periode":
     date_min, date_max = df["periode"].min().date(), df["periode"].max().date()
     c1, c2 = st.columns([2, 1])
     with c1:
@@ -517,7 +589,7 @@ with tab_periode:
 # -----------------------------------------------------------------------
 # Croisement localité × période
 # -----------------------------------------------------------------------
-with tab_croisement:
+if nav_actif == "croisement":
     section_title("INSTALLATIONS PAR LOCALITÉ ET PAR PÉRIODE")
     toutes_localites_crois = df["localite"].value_counts().index.tolist()
     vue_croisement = st.radio(
@@ -559,16 +631,14 @@ with tab_croisement:
 # -----------------------------------------------------------------------
 # Par phase du projet
 # -----------------------------------------------------------------------
-with tab_phase:
+if nav_actif == "phase":
     section_title("STATISTIQUES PAR PHASE DU PROJET")
-    noms_phases = [str(p).strip() for p in phases_editees["Phase"].tolist() if pd.notna(p) and str(p).strip()]
     if not noms_phases:
         st.info(
             "Définis au moins une phase (nom + dates de début/fin) dans l'encadré « 🏗️ Phases du projet » "
             "de la barre latérale pour voir les statistiques par phase."
         )
     else:
-        n_hors_phase = int((df["phase"] == "(hors phase)").sum())
         if n_hors_phase:
             st.warning(
                 f"{n_hors_phase} compteur(s) ont une période d'installation en dehors de toutes les phases "
@@ -580,40 +650,35 @@ with tab_phase:
             "classement est donc entièrement basé sur la période d'installation de chaque compteur."
         )
 
-        ordre_phases = noms_phases + (["(hors phase)"] if n_hors_phase else [])
         par_phase = df["phase"].value_counts().reindex(ordre_phases).fillna(0).astype(int)
         classees = par_phase.drop("(hors phase)", errors="ignore")
         phase_top = classees.idxmax() if not classees.empty and classees.max() > 0 else "—"
 
-        kpi_row([
-            ("🏗️ Phases définies", str(len(noms_phases)), None),
-            ("🥇 Phase la plus équipée", phase_top, None),
-            ("🔌 Compteurs classés", f"{int(classees.sum()):,}".replace(",", " "), None),
-            ("❓ Compteurs hors phase", str(n_hors_phase), None),
+        kpi_card_row([
+            ("🏗️", "Phases définies", str(len(noms_phases))),
+            ("🥇", "Phase la plus équipée", phase_top),
+            ("🔌", "Compteurs classés", f"{int(classees.sum()):,}".replace(",", " ")),
+            ("❓", "Compteurs hors phase", str(n_hors_phase)),
         ])
 
         st.write("")
-        section_title("COMPTEURS INSTALLÉS PAR PHASE")
-        df_par_phase = par_phase.reset_index()
-        df_par_phase.columns = ["Phase", "Compteurs installés"]
-        couleurs_phase = [GREY if p == "(hors phase)" else NAVY for p in df_par_phase["Phase"]]
-        fig = px.bar(df_par_phase, x="Phase", y="Compteurs installés", text="Compteurs installés",
-                     category_orders={"Phase": ordre_phases})
-        fig.update_traces(marker_color=couleurs_phase, textposition="outside")
-        fig = plotly_base_layout(fig, height=340, legend=False)
-        st.plotly_chart(fig, use_container_width=True)
+        with st.container(border=True):
+            section_title("COMPTEURS INSTALLÉS PAR PHASE")
+            couleurs_phase = [GREY if p == "(hors phase)" else NAVY for p in df_par_phase["Phase"]]
+            fig = px.bar(df_par_phase, x="Phase", y="Compteurs installés", text="Compteurs installés",
+                         category_orders={"Phase": ordre_phases})
+            fig.update_traces(marker_color=couleurs_phase, textposition="outside")
+            fig = plotly_base_layout(fig, height=340, legend=False)
+            st.plotly_chart(fig, use_container_width=True)
 
         st.write("")
         section_title("OBJECTIFS VS RÉALISÉ")
-        objectifs_definis = targets_editees[targets_editees["Objectif (compteurs)"] > 0]
         if objectifs_definis.empty:
             st.caption(
                 "Aucun objectif chiffré saisi — définis une cible par phase dans la barre latérale "
                 "(« 🎯 Objectifs du projet ») pour voir l'écart réalisé / objectif ici."
             )
         else:
-            fusion_obj = targets_editees.merge(df_par_phase, on="Phase", how="left")
-            fusion_obj["Compteurs installés"] = fusion_obj["Compteurs installés"].fillna(0).astype(int)
             badges_cols = st.columns(len(fusion_obj)) if len(fusion_obj) else []
             for col, (_, ligne) in zip(badges_cols, fusion_obj.iterrows()):
                 with col:
@@ -690,7 +755,7 @@ with tab_phase:
 # principal, que cette application ne lit volontairement pas). Regroupement
 # par région/antenne à partir du référentiel officiel uniquement.
 # -----------------------------------------------------------------------
-with tab_region:
+if nav_actif == "region":
     section_title("RÉPARTITION PAR RÉGION / ANTENNE")
     if sites_ref.empty:
         st.info("Référentiel des sites officiels indisponible — impossible de rattacher les localités à une région.")
@@ -702,7 +767,6 @@ with tab_region:
             "499 sites officiels (sous-localité, quartier) apparaît sous « (hors référentiel) », jamais "
             "rattachée à une région devinée."
         )
-        df_region = regional_breakdown(df, sites_ref)
         hors_ref = int((df_region["region"] == "(hors référentiel)").sum())
         status_badge(
             f"{hors_ref} compteur(s) hors référentiel (sous-localités)" if hors_ref
@@ -711,25 +775,26 @@ with tab_region:
         )
         st.write("")
 
-        par_region = df_region["region"].value_counts().reset_index()
-        par_region.columns = ["Région", "Compteurs installés"]
         couleurs_region = [GREY if r == "(hors référentiel)" else NAVY for r in par_region["Région"]]
-        fig_region = px.bar(par_region.sort_values("Compteurs installés"), x="Compteurs installés", y="Région",
-                             orientation="h", text="Compteurs installés")
-        fig_region.update_traces(marker_color=couleurs_region, textposition="outside")
-        fig_region = plotly_base_layout(fig_region, height=max(300, 34 * len(par_region)), legend=False)
-        st.plotly_chart(fig_region, use_container_width=True)
+        with st.container(border=True):
+            fig_region = px.bar(par_region.sort_values("Compteurs installés"), x="Compteurs installés", y="Région",
+                                 orientation="h", text="Compteurs installés")
+            fig_region.update_traces(marker_color=couleurs_region, textposition="outside")
+            fig_region = plotly_base_layout(fig_region, height=max(300, 34 * len(par_region)), legend=False)
+            st.plotly_chart(fig_region, use_container_width=True)
 
         if df_region["antenne"].nunique() > 1:
-            section_title("RÉPARTITION PAR ANTENNE")
-            par_antenne = df_region["antenne"].value_counts().reset_index()
-            par_antenne.columns = ["Antenne", "Compteurs installés"]
-            couleurs_antenne = [GREY if a == "(hors référentiel)" else BLUE for a in par_antenne["Antenne"]]
-            fig_antenne = px.bar(par_antenne.sort_values("Compteurs installés"), x="Compteurs installés", y="Antenne",
-                                  orientation="h", text="Compteurs installés")
-            fig_antenne.update_traces(marker_color=couleurs_antenne, textposition="outside")
-            fig_antenne = plotly_base_layout(fig_antenne, height=max(280, 34 * len(par_antenne)), legend=False)
-            st.plotly_chart(fig_antenne, use_container_width=True)
+            st.write("")
+            with st.container(border=True):
+                section_title("RÉPARTITION PAR ANTENNE")
+                par_antenne = df_region["antenne"].value_counts().reset_index()
+                par_antenne.columns = ["Antenne", "Compteurs installés"]
+                couleurs_antenne = [GREY if a == "(hors référentiel)" else BLUE for a in par_antenne["Antenne"]]
+                fig_antenne = px.bar(par_antenne.sort_values("Compteurs installés"), x="Compteurs installés", y="Antenne",
+                                      orientation="h", text="Compteurs installés")
+                fig_antenne.update_traces(marker_color=couleurs_antenne, textposition="outside")
+                fig_antenne = plotly_base_layout(fig_antenne, height=max(280, 34 * len(par_antenne)), legend=False)
+                st.plotly_chart(fig_antenne, use_container_width=True)
 
         st.write("")
         section_title("TABLEAU DÉTAILLÉ")
@@ -745,7 +810,7 @@ with tab_region:
 # un site officiel (seuls sites dont la puissance est connue) ; une
 # localité hors référentiel est déjà signalée ailleurs (onglet Par région).
 # -----------------------------------------------------------------------
-with tab_saturation:
+if nav_actif == "saturation":
     section_title("TAUX DE SATURATION DES SITES")
     if puissances_ref.empty:
         st.info("Référentiel des puissances installées indisponible — impossible de calculer la saturation.")
@@ -775,27 +840,28 @@ with tab_saturation:
         saturation_connue = df_saturation.loc[df_saturation["compteurs_installes"] > 0, "taux_saturation"].dropna()
         saturation_moyenne = f"{saturation_connue.mean() * 100:.0f} %" if not saturation_connue.empty else "—"
 
-        kpi_row([
-            ("⚡ Sites en sursaturation (≥ 100 %)", str(nb_critiques), None),
-            (f"🟠 Sites proches de la capacité (≥ {SEUIL_SATURATION_AVERTISSEMENT * 100:.0f} %)", str(nb_alertes), None),
-            ("📈 Saturation moyenne (sites installés)", saturation_moyenne, None),
-            ("🏗️ Sites référencés (puissance connue)", str(len(df_saturation)), None),
+        kpi_card_row([
+            ("⚡", "Sites en sursaturation (≥ 100 %)", str(nb_critiques)),
+            ("🟠", f"Sites proches de la capacité (≥ {SEUIL_SATURATION_AVERTISSEMENT * 100:.0f} %)", str(nb_alertes)),
+            ("📈", "Saturation moyenne (sites installés)", saturation_moyenne),
+            ("🏗️", "Sites référencés (puissance connue)", str(len(df_saturation))),
         ])
 
         st.write("")
-        section_title("SITES LES PLUS SATURÉS")
-        top_saturation = df_saturation.head(15)
-        if top_saturation.empty:
-            st.caption("Aucun site installé à afficher.")
-        else:
-            for _, ligne in top_saturation.iterrows():
-                saturation_bar(
-                    ligne["nom"],
-                    ligne["taux_saturation"],
-                    ligne["statut"],
-                    detail=f"{int(ligne['compteurs_installes'])}/{int(ligne['max_compteurs'])} compteurs · "
-                            f"{ligne['puissance_kwc']:g} kWc",
-                )
+        with st.container(border=True):
+            section_title("SITES LES PLUS SATURÉS")
+            top_saturation = df_saturation.head(15)
+            if top_saturation.empty:
+                st.caption("Aucun site installé à afficher.")
+            else:
+                for _, ligne in top_saturation.iterrows():
+                    saturation_bar(
+                        ligne["nom"],
+                        ligne["taux_saturation"],
+                        ligne["statut"],
+                        detail=f"{int(ligne['compteurs_installes'])}/{int(ligne['max_compteurs'])} compteurs · "
+                                f"{ligne['puissance_kwc']:g} kWc",
+                    )
 
         if nb_critiques:
             st.write("")
@@ -831,19 +897,18 @@ with tab_saturation:
 # Qualité des données — repère les anomalies, ne corrige jamais rien
 # automatiquement
 # -----------------------------------------------------------------------
-with tab_qualite:
+if nav_actif == "qualite":
     section_title("QUALITÉ DES DONNÉES CHARGÉES")
     st.caption(
         "Cet onglet signale des anomalies potentielles pour vérification manuelle — rien n'est corrigé ni "
         "retiré automatiquement des statistiques des autres onglets."
     )
 
-    qualite = data_quality_summary(df)
-    kpi_row([
-        ("🔁 Compteurs en doublon", str(len(doublons_apercu)), None),
-        ("💤 Postes inactifs (> 90 j)", str(len(dormants_apercu)), None),
-        ("❓ Localités non renseignées", f"{qualite.get('taux_localites_non_renseignees', 0) * 100:.1f} %", None),
-        ("❓ Postes non renseignés", f"{qualite.get('taux_postes_non_renseignes', 0) * 100:.1f} %", None),
+    kpi_card_row([
+        ("🔁", "Compteurs en doublon", str(len(doublons_apercu))),
+        ("💤", "Postes inactifs (> 90 j)", str(len(dormants_apercu))),
+        ("❓", "Localités non renseignées", f"{qualite.get('taux_localites_non_renseignees', 0) * 100:.1f} %"),
+        ("❓", "Postes non renseignés", f"{qualite.get('taux_postes_non_renseignes', 0) * 100:.1f} %"),
     ])
 
     st.write("")

@@ -243,6 +243,53 @@ def inject_base_style():
             flex: 0 0 52px; text-align: right; font-weight: 700; font-size: .82rem;
             font-variant-numeric: tabular-nums;
         }}
+
+        /* Rail de navigation latérale — remplace les onglets du haut. On
+           réutilise st.radio (plutôt que plusieurs st.button) parce que son
+           état "sélectionné" est exposé nativement dans le DOM
+           (input[type=radio]:checked) : un vrai signal d'état à cibler en
+           CSS, pas une approximation. Le radio-point lui-même est masqué
+           (::first div dans le label) : il ne reste qu'une pastille
+           icône+libellé pleine largeur, mise en évidence quand sélectionnée. */
+        .aer-nav-brand {{
+            font-weight: 700; font-size: 1.0rem; color: var(--ink-primary);
+            padding: .3rem .2rem .9rem .2rem; letter-spacing: .02em;
+        }}
+        [data-testid="stSidebar"] label[data-testid="stRadioOption"] {{
+            display: block; width: 100%; padding: .5rem .7rem; border-radius: 8px;
+            margin-bottom: 3px; border-left: 3px solid transparent; transition: background .15s ease;
+        }}
+        [data-testid="stSidebar"] label[data-testid="stRadioOption"] > div > div:first-child {{
+            display: none;
+        }}
+        [data-testid="stSidebar"] label[data-testid="stRadioOption"] [data-testid="stMarkdownContainer"] p {{
+            margin: 0; color: var(--ink-secondary); font-size: .9rem;
+        }}
+        [data-testid="stSidebar"] label[data-testid="stRadioOption"]:hover {{
+            background: rgba(255,255,255,.04);
+        }}
+        [data-testid="stSidebar"] label[data-testid="stRadioOption"]:has(input:checked) {{
+            background: rgba(57,135,229,.16); border-left: 3px solid var(--status-info);
+        }}
+        [data-testid="stSidebar"] label[data-testid="stRadioOption"]:has(input:checked) [data-testid="stMarkdownContainer"] p {{
+            color: var(--ink-primary); font-weight: 700;
+        }}
+
+        /* Cartes KPI — accent coloré cyclant sur la palette CATÉGORIELLE
+           (identité du chiffre), jamais une couleur de statut : ces cartes
+           décrivent une grandeur, pas un état à surveiller. */
+        .aer-kpicard {{
+            background: var(--bg-panel); border: 1px solid var(--border); border-radius: 12px;
+            padding: .85rem 1rem; border-top: 3px solid var(--kpi-accent, var(--status-info));
+        }}
+        .aer-kpicard-top {{ display: flex; align-items: center; gap: .5rem; margin-bottom: .3rem; }}
+        .aer-kpicard-icon {{ font-size: 1.1rem; }}
+        .aer-kpicard-label {{
+            color: var(--ink-secondary); font-size: .76rem; text-transform: uppercase; letter-spacing: .03em;
+        }}
+        .aer-kpicard-value {{
+            color: var(--ink-primary); font-size: 1.55rem; font-weight: 700; font-variant-numeric: tabular-nums;
+        }}
         </style>
         """,
         unsafe_allow_html=True,
@@ -303,6 +350,65 @@ def saturation_bar(nom: str, taux: float | None, statut: str, detail: str = ""):
         """,
         unsafe_allow_html=True,
     )
+
+
+def kpi_card(icon: str, label: str, value: str, accent: str = STATUS_INFO):
+    """Une carte KPI = icône + libellé + valeur, avec un liseré supérieur
+    coloré (accent). `accent` vient en général de `CATEGORICAL` (identité
+    du chiffre) — jamais de `STATUS_COLORS` ici, une carte KPI décrit une
+    grandeur, pas un état à surveiller (ce rôle reste à `status_badge`)."""
+    st.markdown(
+        f"""
+        <div class="aer-kpicard" style="--kpi-accent: {accent};">
+          <div class="aer-kpicard-top">
+            <span class="aer-kpicard-icon">{icon}</span>
+            <span class="aer-kpicard-label">{label}</span>
+          </div>
+          <div class="aer-kpicard-value">{value}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def kpi_card_row(items: list[tuple[str, str, str]], accents: list[str] | None = None):
+    """items : liste de (icône, libellé, valeur). `accents` est cyclé sur
+    `CATEGORICAL` par défaut si non fourni."""
+    palette = accents or CATEGORICAL
+    cols = st.columns(len(items))
+    for i, (col, (icon, label, value)) in enumerate(zip(cols, items)):
+        with col:
+            kpi_card(icon, label, value, accent=palette[i % len(palette)])
+
+
+def gauge_chart(value_pct: float, title: str, key: str = "gauge", height: int = 220) -> go.Figure:
+    """Jauge 0-100 % (go.Indicator) — toujours accompagnée du chiffre en
+    toutes lettres au centre (jamais la position de l'aiguille seule, cf.
+    WCAG 1.4.1). L'arc utilise un dégradé de statut (rouge → ambre → vert)
+    pour une lecture d'ensemble instantanée ; seule la valeur réelle décide
+    du résultat, l'arc est une aide visuelle secondaire."""
+    fig = go.Figure(go.Indicator(
+        mode="gauge+number",
+        value=round(value_pct, 1),
+        number={"suffix": " %", "font": {"size": 34, "color": INK_PRIMARY}},
+        gauge={
+            "axis": {"range": [0, 100], "tickcolor": INK_MUTED, "tickfont": {"color": INK_MUTED, "size": 10}},
+            "bar": {"color": ACCENT, "thickness": .28},
+            "bgcolor": BG_SURFACE,
+            "borderwidth": 0,
+            "steps": [
+                {"range": [0, 50], "color": "rgba(239,68,68,.18)"},
+                {"range": [50, 80], "color": "rgba(245,158,11,.18)"},
+                {"range": [80, 100], "color": "rgba(16,185,129,.18)"},
+            ],
+        },
+        title={"text": title, "font": {"size": 13, "color": INK_SECONDARY}},
+    ))
+    fig.update_layout(
+        height=height, margin=dict(l=35, r=35, t=50, b=10),
+        paper_bgcolor="rgba(0,0,0,0)", font=dict(family="system-ui, -apple-system, Segoe UI, sans-serif"),
+    )
+    return fig
 
 
 def animated_counter(label: str, value: int, status: str = "info", key: str = "counter", height: int = 120):
