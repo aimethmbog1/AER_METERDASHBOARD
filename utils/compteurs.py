@@ -106,9 +106,12 @@ def assign_phases(df: pd.DataFrame, phases: pd.DataFrame) -> pd.Series:
 # ---------------------------------------------------------------------------
 # Phase par préfixe du numéro de compteur — convention communiquée par
 # l'utilisateur (pas une règle officielle documentée dans les exports
-# Holley) : le numéro de compteur (`numero_compteur`, colonne « Old Consumer
-# No. ») commençant par « 251 » appartient à la Phase 1, par « 241 » à la
-# Phase 2, par « 5 » à la Phase 3. L'association se fait par ORDRE (1er
+# Holley) : le numéro de série du compteur (`sn`, colonne « SN » des exports
+# Holley — PAS « Old Consumer No. », qui est un numéro d'abonné commençant
+# toujours par 9000… et ne correspond donc jamais à aucun préfixe) commençant
+# par « 251 » appartient à la Phase 1, par « 241 » à la Phase 2, par « 5 » à
+# la Phase 3. Si la colonne `sn` est absente (fichier non Holley mappé à la
+# main), on se rabat sur `numero_compteur`. L'association se fait par ORDRE (1er
 # préfixe -> 1re ligne du tableau des phases, etc.), jamais par nom, pour
 # rester valable même si l'utilisateur renomme ses phases dans la barre
 # latérale. À ajuster ici si une autre convention s'applique.
@@ -120,7 +123,7 @@ def assign_phase_by_prefix(
     df: pd.DataFrame, phases: pd.DataFrame,
     prefixes: list[tuple[str, int]] = PREFIXES_COMPTEUR_PHASE,
 ) -> pd.Series:
-    """Classe chaque ligne de `df` par préfixe de `numero_compteur`. Renvoie
+    """Classe chaque ligne de `df` par préfixe de `sn` (à défaut `numero_compteur`). Renvoie
     None (valeur manquante) pour un numéro ne correspondant à aucun préfixe
     connu, ou si la phase à l'index demandé n'est pas définie dans `phases`
     — jamais une phase devinée. Les préfixes les plus longs sont testés en
@@ -128,10 +131,12 @@ def assign_phase_by_prefix(
     chevauchement (ex. un futur préfixe à 1 chiffre ne doit pas avaler un
     préfixe à 3 chiffres qui commence par le même chiffre)."""
     resultat = pd.Series([None] * len(df), index=df.index, dtype="object")
-    if "numero_compteur" not in df.columns or df.empty:
+    colonne = "sn" if "sn" in df.columns else "numero_compteur"
+    if colonne not in df.columns or df.empty:
         return resultat
     noms_phases = phases["Phase"].tolist()
-    numeros = df["numero_compteur"].astype(str).str.strip()
+    numeros = (df[colonne].astype(str).str.replace("\x00", "", regex=False)
+               .str.strip().str.replace(r"\.0$", "", regex=True))
     non_classes = pd.Series(True, index=df.index)
     for prefixe, idx in sorted(prefixes, key=lambda p: -len(p[0])):
         if idx >= len(noms_phases) or pd.isna(noms_phases[idx]) or not str(noms_phases[idx]).strip():
@@ -178,8 +183,23 @@ def read_excel_sheet_names(uploaded_file) -> list[str]:
         return []
 
 
+def _sans_nul(v):
+    """Retire les caractères nuls (\\x00) : certains exports Holley .xls
+    stockent le texte avec un \\x00 après chaque caractère (« 2\\x004\\x001… »),
+    ce qui casse la détection du format, les préfixes 241/251 et les noms de
+    localités. Constaté sur 01-07-2026.xls."""
+    return v.replace("\x00", "").strip() if isinstance(v, str) else v
+
+
 def load_excel(uploaded_file, sheet_name=0) -> pd.DataFrame:
-    return pd.read_excel(uploaded_file, sheet_name=sheet_name)
+    # dtype=str sur SN : un numéro de série lu comme nombre perdrait ses zéros
+    # de tête éventuels ou passerait en notation scientifique.
+    raw = pd.read_excel(uploaded_file, sheet_name=sheet_name, dtype={"SN": str})
+    raw.columns = [_sans_nul(str(c)) for c in raw.columns]
+    for c in raw.columns:
+        if raw[c].dtype == object or str(raw[c].dtype) in ("str", "string"):
+            raw[c] = raw[c].map(_sans_nul)
+    return raw
 
 
 _MOTIF_DATE_NOM_FICHIER = re.compile(r"(\d{1,2})[-_](\d{1,2})[-_](\d{4})")
@@ -251,6 +271,11 @@ def build_from_holley_files(fichiers: list[dict]) -> pd.DataFrame:
                                   if parties.shape[1] > 1 and 1 in parties else "(non renseigné)")
         bloc["solaire"] = bloc["type_compteur"].str.contains("SOLAR|SOLAIRE", regex=True, na=False)
         bloc["numero_compteur"] = raw.get("Old Consumer No.", raw.get("Holley Meter ID", pd.Series(range(n))))
+        # Numéro de série physique du compteur — c'est LUI qui porte la phase
+        # (préfixe 251/241/5), pas le numéro d'abonné ci-dessus.
+        if "SN" in raw.columns:
+            bloc["sn"] = (raw["SN"].astype(str).str.replace("\x00", "", regex=False)
+                          .str.strip().str.replace(r"\.0$", "", regex=True))
         bloc["periode"] = pd.Timestamp(f["periode"]).to_period("M").to_timestamp()
         bloc["nom_fichier"] = f["nom"]
         blocs.append(bloc)
