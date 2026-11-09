@@ -196,7 +196,7 @@ with st.sidebar.expander("Définir les phases (dates éditables)", expanded=Fals
     st.session_state["cpt_phases_df"] = phases_editees
     st.caption(
         "Convention communiquée par l'utilisateur, prioritaire sur les dates ci-dessus : un numéro de "
-        "compteur commençant par **251** → Phase 1, **241** → Phase 2, **5** → Phase 3 (ordre des lignes "
+        "série (SN) commençant par **251** → Phase 1, **241** → Phase 2, **5** → Phase 3 (ordre des lignes "
         "ci-dessus, pas leur nom). Les plages de dates ne servent plus que pour les numéros ne correspondant "
         "à aucun de ces préfixes — à ajuster dans `utils/compteurs.py` (`PREFIXES_COMPTEUR_PHASE`) si une "
         "autre convention s'applique."
@@ -389,7 +389,7 @@ dormants_apercu = detect_dormant_postes(df)
 qualite = data_quality_summary(df)
 
 nb_phase_desaccord = int(phase_desaccord.sum())
-colonnes_desaccord = [c for c in ["numero_compteur", "localite", "poste", "periode"] if c in df.columns]
+colonnes_desaccord = [c for c in ["sn", "numero_compteur", "localite", "poste", "periode"] if c in df.columns]
 desaccord_apercu = df.loc[phase_desaccord, colonnes_desaccord + ["phase"]].copy()
 if not desaccord_apercu.empty:
     desaccord_apercu["phase (date)"] = assign_phases(df.loc[phase_desaccord], phases_editees)
@@ -731,7 +731,7 @@ if nav_actif == "phase":
                 "définies — ajuste les dates de début/fin dans la barre latérale si besoin."
             )
         st.caption(
-            "Classement prioritaire : numéro de compteur commençant par **251** → 1re phase ci-dessus, "
+            "Classement prioritaire : numéro de série (colonne SN) commençant par **251** → 1re phase ci-dessus, "
             "**241** → 2e phase, **5** → 3e phase (convention communiquée par l'utilisateur). Les plages de "
             "dates, définies et modifiables dans la barre latérale (« 🏗️ Phases du projet »), ne servent plus "
             "que pour les numéros ne correspondant à aucun de ces préfixes."
@@ -1060,7 +1060,7 @@ if nav_actif == "qualite":
 
 st.write("")
 with st.expander("📄 Export complet des compteurs (toutes colonnes nettoyées)"):
-    colonnes_export = [c for c in ["numero_compteur", "localite", "poste", "phase", "categorie", "type_compteur",
+    colonnes_export = [c for c in ["sn", "numero_compteur", "localite", "poste", "phase", "categorie", "type_compteur",
                                     "solaire", "periode", "nom_fichier"] if c in df.columns]
     st.dataframe(df[colonnes_export], use_container_width=True, hide_index=True, height=400)
     st.download_button("⬇️ Télécharger toutes les lignes (CSV)", df[colonnes_export].to_csv(index=False).encode("utf-8"),
